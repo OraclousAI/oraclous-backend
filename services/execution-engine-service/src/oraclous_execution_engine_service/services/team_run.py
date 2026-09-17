@@ -704,6 +704,8 @@ def make_harness_dispatch(
     on_cost: Callable[[int], None] | None = None,
     # #1108: (role, curated error token) for a FAILED member whose harness reported one.
     on_member_failure: Callable[[str, str], None] | None = None,
+    # #1111: (role, attempt count) for a FAILED member whose harness reported a valid count.
+    on_member_attempts: Callable[[str, int], None] | None = None,
     # #1072: the live pooled tally (mirrors `run_team`'s own `cost_so_far`) — read ONLY to charge
     # an unconfirmed cancel's fail-closed headroom; never mutated here (on_cost still owns writes).
     cost_so_far: Callable[[], int] | None = None,
@@ -970,6 +972,16 @@ def make_harness_dispatch(
                 and _MEMBER_ERROR_TOKEN.fullmatch(error_type)
             ):
                 on_member_failure(member.role, error_type)
+            # #1111 decision 4: attempts = 1 + the in-run recovery retries the member spent. Only a
+            # genuine int >= 1 is reported (never a bool, float, string, or missing value).
+            attempts = result.get("attempts")
+            if (
+                on_member_attempts is not None
+                and isinstance(attempts, int)
+                and not isinstance(attempts, bool)
+                and attempts >= 1
+            ):
+                on_member_attempts(member.role, attempts)
             detail = result.get("error_message") or result.get("error_type")
             raise HarnessClientError(
                 f"member {member.role!r} harness did not succeed: {status}"
@@ -1064,6 +1076,7 @@ async def run_team_harness(
     on_child: Callable[[str, str], None] | None = None,
     on_cost: Callable[[int], None] | None = None,
     on_member_failure: Callable[[str, str], None] | None = None,
+    on_member_attempts: Callable[[str, int], None] | None = None,
     cost_so_far: Callable[[], int] | None = None,
     workspace_root: str | None = None,
     graph_id: str | None = None,
@@ -1120,6 +1133,7 @@ async def run_team_harness(
         on_child=on_child,
         on_cost=_on_cost,
         on_member_failure=on_member_failure,
+        on_member_attempts=on_member_attempts,
         # #1072: the same pooled tally `run_team` gets below — so an unconfirmed cancel's
         # fail-closed pool charge reads the live tally, not a stale/zero one.
         cost_so_far=pooled_cost,
@@ -1226,6 +1240,7 @@ async def run_team_hybrid(
     on_child: Callable[[str, str], None] | None = None,
     on_cost: Callable[[int], None] | None = None,
     on_member_failure: Callable[[str, str], None] | None = None,
+    on_member_attempts: Callable[[str, int], None] | None = None,
     workspace_root: str | None = None,
     graph_id: str | None = None,
     inputs: dict[str, Any] | None = None,
@@ -1265,6 +1280,7 @@ async def run_team_hybrid(
             on_child=on_child,
             on_cost=on_cost,
             on_member_failure=on_member_failure,
+            on_member_attempts=on_member_attempts,
             cost_so_far=cost_so_far,  # #585: the engine's pooled tally (incl. prior_cost on resume)
             workspace_root=workspace_root,
             graph_id=graph_id,
@@ -1301,6 +1317,7 @@ async def run_team_hybrid(
         on_child=on_child,
         on_cost=on_cost,
         on_member_failure=on_member_failure,
+        on_member_attempts=on_member_attempts,
         # #1072: the same pooled tally threaded to `run_team`/`run_loop_seam` below (this param
         # already existed on this function) — so an unconfirmed cancel's pool charge stays live.
         cost_so_far=cost_so_far,

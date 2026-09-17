@@ -134,6 +134,13 @@ class EngineTeamRun(BaseModel):
     member_error_codes: Mapped[dict[str, str]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default="{}"
     )
+    # ── per-member attempt counts (#1111 decision 4; additive) ──────────────────────────────────
+    # role -> attempts (1 + the in-run recovery retries spent) for a member whose harness run
+    # FAILED and reported a valid count. Written at settle; a re-driven role's stale entry is
+    # cleared. server_default mirrors migration 0031.
+    member_attempt_counts: Mapped[dict[str, int]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
     # ── per-loop checkpoint (ADR-043 #552 PR-C; additive) ─────────────────────────────────────
     # "<loop_index>" -> {round, started_at, status} — set by the hybrid conductor so a loop resumes
     # at a ROUND boundary (the round counter + the ORIGINAL wall-clock start survive a HITL pause /
