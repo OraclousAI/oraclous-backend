@@ -260,10 +260,34 @@ class RegistryClient:
         )
         return await self._json(resp)
 
-    async def execute(self, instance_id: uuid.UUID, input_data: dict[str, Any]) -> dict[str, Any]:
-        path = f"/api/v1/instances/{instance_id}/execute"
+    async def execute(
+        self,
+        instance_id: uuid.UUID,
+        input_data: dict[str, Any],
+        *,
+        run_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Dispatch one operation on a registry instance.
+
+        ``run_context`` (#1130) is THIS RUN's own identity — producer / graph / working tree — and
+        it travels WITH the call, so the registry uses it instead of the instance's stored
+        configuration. That row is shared by every run of the same seeded app and is re-read on
+        every dispatch, so a second run starting mid-flight used to silently take the first run's
+        artifacts with it.
+
+        Stating an identity is a privileged act, so a call that states one goes over the internal
+        plane (X-Internal-Key; the gateway never edge-routes ``/internal``) — no human caller can
+        reach it to claim to be someone else's run. A dispatch that states nothing asserts nothing
+        and keeps the ordinary member-facing path, unchanged.
+        """
+        body: dict[str, Any] = {"input_data": input_data}
+        if run_context:
+            path = f"/internal/v1/instances/{instance_id}/execute"
+            body["run_context"] = run_context
+        else:
+            path = f"/api/v1/instances/{instance_id}/execute"
         try:
-            resp = await self._client.post(path, json={"input_data": input_data})
+            resp = await self._client.post(path, json=body)
         except httpx.TransportError as exc:
             # #1111: a timeout or a reset connection used to escape as a raw httpx exception. It is
             # transient, and only the exception class crosses — never its text. Whether the call

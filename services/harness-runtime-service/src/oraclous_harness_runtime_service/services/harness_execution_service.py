@@ -1537,6 +1537,19 @@ class HarnessExecutionService:
             graph_authoritative=graph_authoritative,
             producer=producer,
         )
+        # #1130: the same per-run keys `_materialise` just bound onto the instances, carried on
+        # EVERY dispatch below. The instance row is shared (a seeded app's sub-harness id is stable
+        # across runs) and the registry re-reads it on every execute, so a second run of the same
+        # app, starting while this one is still working, would otherwise rebind the row underneath
+        # us and take this run's remaining artifacts with it. What travels with the call cannot be
+        # overtaken; the stored row is now only a coherent default for callers that send nothing.
+        run_context = _per_run_configuration(
+            workspace_root=workspace_root,
+            graph_id=graph_id,
+            precedence_order=precedence_order,
+            graph_authoritative=graph_authoritative,
+            producer=producer,
+        )
 
         async def dispatch(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
             instance_id = instance_by_binding.get(spec.binding)
@@ -1569,7 +1582,13 @@ class HarnessExecutionService:
                     type(exc).__name__,
                 )
                 raise
-            execution = await self._registry.execute(instance_id, payload)
+            # A run that binds nothing (a single-agent call with no workspace, graph or producer)
+            # asserts no identity, so it dispatches exactly as it always did.
+            execution = (
+                await self._registry.execute(instance_id, payload, run_context=run_context)
+                if run_context
+                else await self._registry.execute(instance_id, payload)
+            )
             if execution.get("status") != "SUCCESS":
                 raise _tool_execution_error(execution)
             return execution.get("output_data") or {}

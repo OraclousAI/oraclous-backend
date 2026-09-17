@@ -20,12 +20,18 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 
 from oraclous_capability_registry_service.core.dependencies import (
     InstanceManagerDep,
     OrganisationIdDep,
+    PrincipalDep,
+    ToolExecutionServiceDep,
     verify_internal_key,
+)
+from oraclous_capability_registry_service.schema.execution_schema import (
+    ExecutionOut,
+    InternalExecuteRequest,
 )
 from oraclous_capability_registry_service.schema.instance_schema import (
     InstanceOut,
@@ -49,4 +55,33 @@ async def update_configuration(
     """Replace this instance's stored configuration (#1130). PUT, because it is a full replace."""
     return await mgr.update_configuration(
         instance_id=instance_id, body=body, organisation_id=organisation_id
+    )
+
+
+@router.post(
+    "/instances/{instance_id}/execute",
+    response_model=ExecutionOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def execute_instance(
+    instance_id: UUID,
+    body: InternalExecuteRequest,
+    principal: PrincipalDep,
+    svc: ToolExecutionServiceDep,
+) -> ExecutionOut:
+    """Dispatch, carrying the identity of the run making the call (#1130).
+
+    The twin of the member-facing ``POST /api/v1/instances/{id}/execute``, which stays exactly as
+    it is. The only difference is ``run_context``: this run's producer / graph / working tree,
+    which wins over the instance's shared stored configuration for this dispatch. Stating that is
+    an identity assertion, so it is only accepted from a caller that proved it is a service. Org
+    and user still come from the principal (ORG001) — the body never names a tenant.
+    """
+    return await svc.execute_sync(
+        instance_id=instance_id,
+        body=body,
+        organisation_id=principal.organisation_id,
+        user_id=principal.principal_id,
+        principal_type=principal.principal_type.value,
+        run_context=body.run_context,
     )
