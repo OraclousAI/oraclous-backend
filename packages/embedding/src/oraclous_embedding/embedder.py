@@ -55,6 +55,19 @@ CREDENTIAL_FAULT_MARKERS = (
 )
 
 
+#: The NARROWER half of the list above: provider answers that mean the credential was REFUSED
+#: (401/403 — wrong, revoked, or not entitled), as opposed to accepted-but-EXHAUSTED (429/quota).
+#: A strict subset of `CREDENTIAL_FAULT_MARKERS` on purpose — a rejection is always a credential
+#: fault, never a disjoint case — so nothing here may be added without adding it there too.
+CREDENTIAL_REJECTION_MARKERS = (
+    "401",
+    "403",
+    "permissiondenied",
+    "authenticationerror",
+    "invalid_api_key",
+)
+
+
 def is_credential_failure(error: BaseException) -> bool:
     """True when a model call failed because the CREDENTIAL is bad, not because the input is.
 
@@ -66,6 +79,19 @@ def is_credential_failure(error: BaseException) -> bool:
     """
     text = f"{type(error).__name__}: {error}".lower()
     return any(marker in text for marker in CREDENTIAL_FAULT_MARKERS)
+
+
+def is_credential_rejection(error: BaseException) -> bool:
+    """True when the provider REFUSED the credential, as opposed to exhausting it (#1109).
+
+    Both are credential faults — `is_credential_failure` stays True for either, and the write side
+    keeps acting on that single answer — but the two need different advice: a refused key has to be
+    replaced, while an exhausted one only has to be waited on or upgraded. The read side answers a
+    search with a different error code for each, so the distinction lives here beside the list it is
+    drawn from rather than as a second marker list inside a service.
+    """
+    text = f"{type(error).__name__}: {error}".lower()
+    return any(marker in text for marker in CREDENTIAL_REJECTION_MARKERS)
 
 
 @runtime_checkable

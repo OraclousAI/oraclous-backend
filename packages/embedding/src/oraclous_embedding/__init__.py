@@ -9,6 +9,7 @@ the two can never drift apart again.
 
 from oraclous_embedding.embedder import (
     CREDENTIAL_FAULT_MARKERS,
+    CREDENTIAL_REJECTION_MARKERS,
     LEGACY_NULL_EMBEDDER_ID,
     Embedder,
     EmbedderCredentialRequired,
@@ -16,11 +17,13 @@ from oraclous_embedding.embedder import (
     OpenAIEmbedder,
     embedder_identity,
     is_credential_failure,
+    is_credential_rejection,
     make_embedder,
 )
 
 __all__ = [
     "CREDENTIAL_FAULT_MARKERS",
+    "CREDENTIAL_REJECTION_MARKERS",
     "LEGACY_NULL_EMBEDDER_ID",
     "Embedder",
     "EmbedderCredentialRequired",
@@ -28,5 +31,6 @@ __all__ = [
     "OpenAIEmbedder",
     "embedder_identity",
     "is_credential_failure",
+    "is_credential_rejection",
     "make_embedder",
 ]
