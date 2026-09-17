@@ -179,6 +179,9 @@ class HarnessExecutionOut(BaseModel):
     # reason: a caller reads this on every run and None would make "fetched nothing" indistinguish-
     # able from "not recorded".
     fetched_urls: list[str] = []
+    # #1111 decision 4: 1 + the in-run recovery retries this member spent. Additive; the engine's
+    # HarnessClient reads it off this JSON.
+    attempts: int = 1
 
     @computed_field  # type: ignore[prop-decorator]
     @property

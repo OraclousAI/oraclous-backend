@@ -414,6 +414,10 @@ def _cursor(
         # #1111: the final-answer correction's one-shot state rides the pause the same way.
         "output_repair_used": output_repair_used,
         "output_repair_grant": output_repair_grant,
+        # #1111 decision 4: the recovery retries already spent, so a resumed run's `attempts` keeps
+        # counting instead of starting over at 1.
+        # (getattr: a checkpoint-shaped double built before #1111 carries no such attribute.)
+        "recovery_retries": getattr(checkpoint, "recovery_retries", 0),
         # #961: the run's restriction survives a HITL pause. Without it a paused run comes back
         # unrestricted, which is the same silent drop the whole issue exists to close — and it would
         # be reachable by any member whose search sits behind a human gate.
@@ -958,6 +962,9 @@ class HarnessExecutionService:
             # #975 (§CITE cite-by-reference, A3): persisted on BOTH the success path and the
             # escalate/pause path — this single `create()` call handles both statuses.
             fetched_urls=result.fetched_urls,
+            # #1111 decision 4: 1 + the recovery retries the member spent — read by the engine off
+            # the execution response. (getattr: a loop-result double built before #1111 has none.)
+            attempts=getattr(result, "attempts", 1),
         )
         await self._emit_provenance(
             result.steps,
@@ -1211,6 +1218,8 @@ class HarnessExecutionService:
             # unspent.
             output_repair_used=bool(cursor.get("output_repair_used")),
             output_repair_grant=int(cursor.get("output_repair_grant") or 0),
+            # #1111 decision 4: a pre-#1111 checkpoint lacks the key → 0 retries carried.
+            recovery_retries=int(cursor.get("recovery_retries") or 0),
         )
         prompt = manifest.primary_prompt()
         try:
@@ -1307,6 +1316,8 @@ class HarnessExecutionService:
             # #975 (§CITE cite-by-reference, A3): same UNION posture — the repository owns merging
             # this segment's registry into what the pre-pause segment already recorded.
             fetched_urls=result.fetched_urls,
+            # #1111 decision 4: cumulative — the cursor carried the pre-pause recovery retries.
+            attempts=getattr(result, "attempts", 1),
         )
         await self._emit_provenance(
             result.steps,  # the new tail only

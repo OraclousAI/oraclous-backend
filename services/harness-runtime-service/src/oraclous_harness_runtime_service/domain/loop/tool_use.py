@@ -205,6 +205,10 @@ class LoopCheckpoint:
     # above. Defaulted so a checkpoint written before #1111 resumes unchanged.
     output_repair_used: bool = False
     output_repair_grant: int = 0
+    # #1111 decision 4: the in-run recovery retries already spent before the pause, so a resumed
+    # run keeps counting from there instead of reporting a fresh ``attempts``. Defaulted so a
+    # checkpoint written before this field resumes unchanged.
+    recovery_retries: int = 0
 
 
 @dataclass(slots=True)
@@ -242,6 +246,10 @@ class LoopResult:
     # the engine threads it member-to-member) reads it on every run, and None would be
     # indistinguishable from "the loop never populated it".
     fetched_urls: list[str] = field(default_factory=list)
+    # #1111 decision 4: 1 + the in-run recovery retries this member spent (final-answer correction
+    # turns, transient model retries, transient tool retries), cumulative across a HITL resume.
+    # Defaults to 1 so an untouched call site reads a plain single attempt.
+    attempts: int = 1
 
 
 def _truncate(text: str, limit: int = 500) -> str:
@@ -1331,6 +1339,8 @@ async def run_tool_use_loop(
     # a member that answers badly on its last allowed iteration can still write the fixed answer.
     output_repair_used = resume_state.output_repair_used if resume_state is not None else False
     output_repair_grant = resume_state.output_repair_grant if resume_state is not None else 0
+    # #1111 decision 4: recovery retries spent so far; `attempts` on every result is 1 + this.
+    recovery_retries = resume_state.recovery_retries if resume_state is not None else 0
     # #580: set when a retrieval reports data-absence (an empty result it flagged). A run that
     # completes after this degrades to a flagged PARTIAL (never a silent SUCCEEDED) — ADR-021.
     # Intentionally NOT carried across a HITL resume (a fresh nonlocal): an empty-retrieval-then-
@@ -1500,6 +1510,7 @@ async def run_tool_use_loop(
             served_citation_ids=list(served_citation_ids),
             fetched_urls=list(fetched_urls),
             protocol_shape=protocol_shape,
+            attempts=1 + recovery_retries,
         )
 
     def _degrade(name: str, reason: str, message: str, iterations: int) -> LoopResult:
@@ -1526,6 +1537,7 @@ async def run_tool_use_loop(
             unverified_links=list(links_blocked or unverified_links),
             fetched_urls=list(fetched_urls),
             protocol_shape=protocol_shape,
+            attempts=1 + recovery_retries,
         )
 
     def _budget_gate(name: str, reason: str, message: str, iterations: int) -> LoopResult:
@@ -1574,6 +1586,7 @@ async def run_tool_use_loop(
             served_citation_ids=list(served_citation_ids),
             fetched_urls=list(fetched_urls),
             protocol_shape=protocol_shape,
+            attempts=1 + recovery_retries,
         )
 
     def _refuse_non_object_args(tc: dict[str, Any], spec: ToolSpec) -> None:
@@ -1614,6 +1627,7 @@ async def run_tool_use_loop(
         marks it ``transient``: a rate-limited provider, a registry 5xx/timeout/reset) with the
         same backoff and bound as a transient LLM-call error, before the model sees any error.
         A permanent failure, an exhausted bound, or a spent wall-time budget re-raises."""
+        nonlocal recovery_retries
         attempt = 0
         while True:
             try:
@@ -1625,6 +1639,7 @@ async def run_tool_use_loop(
                 if _over_wall_time():
                     raise
                 attempt += 1
+                recovery_retries += 1
 
     def _tool_refused(error_type: str, error_message: str, iterations: int) -> LoopResult:
         """#1111 decision 3: the member FAILED on a curated, non-transient tool refusal — the same
@@ -1643,6 +1658,7 @@ async def run_tool_use_loop(
             served_citation_ids=list(served_citation_ids),
             fetched_urls=list(fetched_urls),
             protocol_shape=protocol_shape,
+            attempts=1 + recovery_retries,
         )
 
     async def _run_tool_calls(
@@ -1700,6 +1716,7 @@ async def run_tool_use_loop(
                     json_repair_grant=json_repair_grant,
                     output_repair_used=output_repair_used,
                     output_repair_grant=output_repair_grant,
+                    recovery_retries=recovery_retries,
                 )
                 return _escalate(
                     f"{spec.binding}.{spec.operation}",
@@ -2107,6 +2124,7 @@ async def run_tool_use_loop(
         ``_WallTimeBudgetExhausted`` — not counted against the retry budget, and not classified via
         ``_is_transient`` — so it reaches the caller as the run's own wall-time exhaustion, not a
         generic transient/permanent LLM error."""
+        nonlocal recovery_retries
         attempt = 0
         while True:
             remaining = _remaining_wall_time()
@@ -2140,6 +2158,7 @@ async def run_tool_use_loop(
                 ):  # the backoff itself may cross the deadline — stop, don't retry
                     raise
                 attempt += 1
+                recovery_retries += 1
 
     # #853: a `while` rather than a `range()` because the iteration cap is no longer fixed — a
     # spent repair turn grants one extra iteration alongside the extra tool call, so a member that
@@ -2179,6 +2198,7 @@ async def run_tool_use_loop(
                 served_citation_ids=list(served_citation_ids),
                 fetched_urls=list(fetched_urls),
                 protocol_shape=protocol_shape,
+                attempts=1 + recovery_retries,
             )
         llm_ended = datetime.now(UTC)
         tokens_used += resp.total_tokens
@@ -2347,6 +2367,7 @@ async def run_tool_use_loop(
                 if missing_keys:
                     output_repair_used = True
                     output_repair_grant = 1
+                    recovery_retries += 1
                     problem = _OUTPUT_REPAIR_PARSE.format(error=parse_error) if parse_error else ""
                     correction = _OUTPUT_REPAIR_MESSAGE.format(
                         problem=problem, missing=", ".join(missing_keys)
@@ -2411,6 +2432,7 @@ async def run_tool_use_loop(
                 unverified_links=list(unverified_links),
                 fetched_urls=list(fetched_urls),
                 protocol_shape=protocol_shape,
+                attempts=1 + recovery_retries,
             )
 
         # A tool-call turn is the member moving PAST a blocked draft, so the run no longer ends on
