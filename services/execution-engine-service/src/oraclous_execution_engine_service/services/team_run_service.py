@@ -47,6 +47,7 @@ from oraclous_ohm.sites import InvalidSiteError, normalise_sites
 from oraclous_substrate import ProvenanceCollector, ProvenanceRecord, hash_payload
 
 from oraclous_execution_engine_service.core.config import (
+    HARNESS_CANCEL_TIMEOUT_SECONDS,
     HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS,
 )
 from oraclous_execution_engine_service.core.rls import org_scope
@@ -992,6 +993,9 @@ class TeamRunService:
         # `get_settings()` read inside the drive's own business logic. Defaults to the code-level
         # ceiling so an existing caller/test that never mentions this keeps today's behaviour.
         harness_member_call_timeout: float = HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS,
+        # #1072: same posture as `harness_member_call_timeout` above — resolved once at the wiring
+        # boundary (tasks/run_tasks.py) and threaded down explicitly to the cancel-on-timeout call.
+        harness_cancel_timeout: float = HARNESS_CANCEL_TIMEOUT_SECONDS,
     ) -> None:
         # The drive runs on the WORKER (like jobs/round-tables): the request path (create/advance)
         # needs `enqueue` (hand the QUEUED run to the broker) but NOT a harness; the worker `drive`
@@ -1018,6 +1022,7 @@ class TeamRunService:
         # resolution is possible, so a member that carries only a reference fails closed at create.
         self._registry = registry
         self._harness_member_call_timeout = harness_member_call_timeout
+        self._harness_cancel_timeout = harness_cancel_timeout
 
     def _org(self, principal: Principal) -> uuid.UUID:
         if principal.organisation_id is None:  # fail-closed tenancy (ADR-006)
@@ -2491,6 +2496,7 @@ class TeamRunService:
                 on_checkpoint=_checkpoint,  # #819: each settled member durable mid-drive
                 on_dispatch=_on_dispatch,  # #828: "running", written before the member runs
                 member_call_timeout=self._harness_member_call_timeout,
+                cancel_timeout=self._harness_cancel_timeout,
             )
         except Exception as exc:  # noqa: BLE001 — never strand the run in RUNNING (G-C); fail closed
             # ANY in-process drive error (harness failure, decode, network, bug) -> FAILED, not a

@@ -6,12 +6,12 @@ Run as the PRIVILEGED OWNER (the ``oraclous`` superuser) by the migrate one-shot
 ``alembic upgrade head`` has created the tables + enabled RLS. Idempotent + re-runnable:
 
 * ``CREATE ROLE oraclous_app LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE`` if absent.
-* ``GRANT USAGE ON SCHEMA public`` and ``GRANT SELECT, INSERT, UPDATE, DELETE`` on the four
-  org-scoped harness tables to ``oraclous_app`` (and on FUTURE tables via ALTER DEFAULT PRIVILEGES
-  so a later migration's tables are covered without re-running this with new names).
+* ``GRANT USAGE ON SCHEMA public`` and ``GRANT SELECT, INSERT, UPDATE, DELETE`` on the org-scoped
+  harness tables to ``oraclous_app`` (and on FUTURE tables via ALTER DEFAULT PRIVILEGES so a later
+  migration's tables are covered without re-running this with new names).
 
 The runtime harness then connects as ``oraclous_app`` (a non-owner, NOSUPERUSER role), so the
-FORCE'd RLS policy bites it across all four repositories. The OWNER keeps running migrations (it
+FORCE'd RLS policy bites it across all five repositories. The OWNER keeps running migrations (it
 bypasses RLS as a superuser). The harness has no Celery worker (all DB access is in-request), so the
 runtime role is the same one role across the whole service. This is the riskiest step in the
 rollout — a missing GRANT fails a service closed at first query — so the grants are provisioned in
@@ -30,12 +30,14 @@ from oraclous_substrate.access_async import provision_app_role
 
 from oraclous_harness_runtime_service.core.config import get_settings
 
-# The four org-scoped harness tables RLS is enabled on (the next migration). The runtime role needs
-# DML on exactly these (no sequences — all PKs are client-generated UUIDs).
+# The org-scoped harness tables RLS is enabled on. The runtime role needs DML on exactly these (no
+# sequences — all PKs are client-generated UUIDs). harness_execution_leases (#1072, migration 0010)
+# is the cross-replica cancel lease ExecutionLeaseRepository reads/writes/deletes per request.
 _RLS_TABLES = (
     "harness_executions",
     "harness_checkpoints",
     "harness_assignments",
+    "harness_execution_leases",
     "harness_provenance",
 )
 

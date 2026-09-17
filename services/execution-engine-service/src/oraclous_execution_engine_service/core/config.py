@@ -32,6 +32,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # this ceiling in test_settings_env.py so neither can drift without the test noticing).
 HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS: float = 240.0
 
+# #1072: how long the engine waits on the harness's OWN cancel endpoint after a member call times
+# out. Must exceed the harness's own `cancel_wait_seconds` (harness-runtime-service, default 10s —
+# how long the harness itself waits for the loop to notice its cancel flag and settle) so a
+# genuinely-stopping harness has time to answer with the confirmed 200 before the engine gives up
+# and falls back to the fail-closed charge (#1072 ruling). Independent of
+# `HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS` above — this bounds the CANCEL call, not the
+# original member dispatch.
+HARNESS_CANCEL_TIMEOUT_SECONDS: float = 15.0
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ENGINE_", extra="ignore")
@@ -121,6 +130,12 @@ class Settings(BaseSettings):
     # Lowering this is a legitimate operator choice; `_clamp_harness_member_call_timeout` below
     # (part 2) makes raising it past `HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS` impossible.
     harness_member_call_timeout: float = HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS
+
+    # #1072: the per-member cancel-call bound (see the module constant above for why it must
+    # exceed the harness's own 10s cancel wait). An `ENGINE_`-prefixed operator override, same
+    # posture as `harness_member_call_timeout` — read once at the wiring boundary, threaded down
+    # explicitly, never a `get_settings()` read mid-dispatch.
+    harness_cancel_timeout_seconds: float = HARNESS_CANCEL_TIMEOUT_SECONDS
 
     @field_validator("harness_member_call_timeout")
     @classmethod

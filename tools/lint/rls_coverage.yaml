@@ -110,18 +110,21 @@ services:
       # #826: registry_provenance is the service's own §3.7 audit sink (capability.invoke /
       # capability.refused), STRICT org-isolated like executions — not a widened-read table.
       - registry_provenance
-  # Slice (harness-runtime) — OHM agent runtime. All four org-scoped tables carry a uuid
+  # Slice (harness-runtime) — OHM agent runtime. All five org-scoped tables carry a uuid
   # organisation_id and every runtime accessor binds the org via org_scope before any query (the
   # engine's org-GUC begin-guard then sets it per transaction), so RLS the full set (no exclusions).
-  # All four get the plain STRICT policy — the harness has no shared platform-catalogue case, so no
+  # All five get the plain STRICT policy — the harness has no shared platform-catalogue case, so no
   # read-widening. harness_provenance is INSERT-only at runtime; the strict WITH CHECK is exercised
-  # on every provenance INSERT. The four tables are owned by four independent repositories that each
-  # build their engine through build_rls_engine, so none is left unguarded.
+  # on every provenance INSERT. harness_execution_leases (#1072) is the cross-replica cancel lease —
+  # ExecutionLeaseRepository binds the org the same way. The five tables are owned by five
+  # independent repositories that each build their engine through build_rls_engine, so none is left
+  # unguarded.
   harness-runtime-service:
     tables:
       - harness_executions
       - harness_checkpoints
       - harness_assignments
+      - harness_execution_leases
       - harness_provenance
   # Slice (application-gateway) — the sole external edge's gateway-owned store. All FIVE org-scoped
   # tables carry a uuid organisation_id and RLS is enabled on each (no exclusions — the producer

@@ -734,3 +734,48 @@ async def test_cancel_wait_expiry_returns_pending(monkeypatch: pytest.MonkeyPatc
         exec_task.cancel()
         with contextlib.suppress(BaseException):
             await exec_task
+
+
+# ------------------------------------------------- execute(): the OUTER task's own cancellation ---
+
+
+async def test_outer_cancellation_propagates_and_writes_no_cancelled_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """code-reviewer B1 (PR #1094): the WATCHER cancelling ``loop_task`` (a run cancel) and the
+    HANDLER's own task being cancelled (a forced shutdown, or a future ``asyncio.timeout()``/
+    TaskGroup around ``execute()``) both surface as the SAME ``except asyncio.CancelledError``
+    around ``await loop_task``. They must not be treated alike: only the watcher's cancel may turn
+    into a CANCELLED terminal row + closing provenance. The handler's own cancellation must
+    propagate as ``asyncio.CancelledError`` — no ``executions.create`` call at all (never a
+    CANCELLED row, never any row) — while the lease is still released, so a duplicate id is never
+    left permanently blocked by a run that was cut off mid-flight.
+
+    Deterministic via ``started`` (sequences past "the loop has been entered") and
+    ``asyncio.wait_for`` on the task's own completion — no sleeps."""
+    started = asyncio.Event()
+    _stub_hanging_loop(monkeypatch, started)
+    execs = _FakeExecutions()
+    leases = _FakeLeases()
+    execution_id = uuid.uuid4()
+    # RED today: HarnessExecutionService.__init__ takes no `leases` kwarg — TypeError.
+    svc = _service(execs, leases=leases)
+
+    exec_task = asyncio.create_task(
+        svc.execute(
+            manifest_inline=_manifest(),
+            manifest_ref=None,
+            user_input="go",
+            principal=_principal(),
+            execution_id=execution_id,
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=5.0)
+
+    exec_task.cancel()  # the OUTER task's own cancellation — never the watcher
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(exec_task, timeout=5.0)
+
+    assert execs.create_calls == 0  # no CANCELLED row, no row at all
+    assert leases.released == [(execution_id, _ORG)]  # released despite the propagated cancel

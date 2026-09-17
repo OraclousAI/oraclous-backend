@@ -15,6 +15,10 @@ class HarnessStatus(enum.StrEnum):
     # #587: a budget gate under on_exhaustion=degrade — the loop FINISHED with its best-effort
     # last_text (a flagged partial, not a crash and not a resumable pause). #580 reuses this.
     PARTIAL = "PARTIAL"
+    # #1072: the run was cancelled via the harness cancel endpoint before it reached a terminal
+    # outcome on its own. The loop itself never produces this status — a cancelled ``asyncio.Task``
+    # never reaches its ``return`` — the service persists it from ``LoopProgress`` instead.
+    CANCELLED = "CANCELLED"
 
 
 class StepKind(enum.StrEnum):

@@ -107,6 +107,11 @@ class ExecuteHarnessRequest(BaseModel):
     # execution-engine-service/schema/engine_schemas.py). None/absent -> the harness service
     # defaults it to the run's own `user_input` (A8 standalone default).
     person_supplied_text: str | None = Field(default=None, max_length=8000)
+    # #1072 design ruling: a caller-supplied id for the cancel lease (POST .../{id}/cancel needs a
+    # stable id to target BEFORE the run finishes). None -> the service mints its own id (unchanged
+    # default). A caller-supplied id already claimed by any org raises DuplicateExecutionId, mapped
+    # to 409 — never silently reused or overwritten.
+    execution_id: uuid.UUID | None = None
 
     @model_validator(mode="after")
     def _exactly_one_manifest(self) -> ExecuteHarnessRequest:

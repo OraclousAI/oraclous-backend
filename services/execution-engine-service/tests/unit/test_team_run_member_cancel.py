@@ -36,7 +36,16 @@ from oraclous_execution_engine_service.services.team_run import (
     make_harness_dispatch,
     run_team_harness,
 )
-from oraclous_ohm.manifest import OHMBudget, OHMManifest, OHMMember, OHMMetadata, OHMRuntime
+from oraclous_ohm.manifest import (
+    OHMBudget,
+    OHMLoop,
+    OHMManifest,
+    OHMMember,
+    OHMMetadata,
+    OHMOrchestration,
+    OHMRuntime,
+    OHMTermination,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -159,6 +168,36 @@ class _EarlyBookThenUnconfirmedCancelHarness:
         return None  # 202: still winding down, the cancel never confirms
 
 
+class _AdmittedThenOverBudgetBookThenUnconfirmedCancelHarness(
+    _EarlyBookThenUnconfirmedCancelHarness
+):
+    """Like ``_EarlyBookThenUnconfirmedCancelHarness``, but for the case where the booked role's
+    OWN spend alone already exceeds the pool's whole ceiling. If "a" booked first (as the parent
+    class allows), the pool would already read as exhausted by the time "t" reaches its
+    pre-dispatch ``pool.would_exceed()`` gate — "t" would be skipped as ``budget_skipped`` and
+    would never call ``execute``/``cancel`` at all, so the clamp this test exists to pin would
+    never be exercised.
+
+    A second gate (``timeout_admitted``) fixes the ordering: "t"'s ``execute()`` sets it the
+    instant it is entered — BEFORE it waits on the parent's ``booked_event`` — so admission is
+    recorded while the pool still has headroom; "a"'s ``execute()`` waits on it before booking.
+    That guarantees "t" is admitted first, books nothing itself, then blocks on ``booked_event``
+    until "a"'s over-budget booking lands, and only then times out and cancels."""
+
+    def __init__(self, *, booked_role: str, booked_tokens: int, timeout_role: str) -> None:
+        super().__init__(
+            booked_role=booked_role, booked_tokens=booked_tokens, timeout_role=timeout_role
+        )
+        self.timeout_admitted = asyncio.Event()
+
+    async def execute(self, **kwargs: Any) -> dict[str, Any]:
+        if kwargs.get("manifest_ref") == f"org:x/{self._timeout_role}@1":
+            self.timeout_admitted.set()  # "t" is admitted while the pool still has headroom
+            return await super().execute(**kwargs)
+        await asyncio.wait_for(self.timeout_admitted.wait(), timeout=5.0)  # "t" admits first
+        return await super().execute(**kwargs)
+
+
 async def test_timeout_cancels_dispatched_execution_id() -> None:
     """On a timeout, dispatch cancels the SAME execution_id it minted and sent to execute() —
     exactly once, never a fresh/different id and never zero calls."""
@@ -259,6 +298,47 @@ async def test_unconfirmed_cancel_with_pool_only_charges_remaining_headroom() ->
     assert result.member_status["b"] == "budget_skipped"  # the pool stopped it, not a block
 
 
+async def test_unconfirmed_cancel_never_charges_negative_when_pool_already_over_budget() -> None:
+    """#1072 review finding C3 (PR #1094, qa-engineer; corrected per be-test-reviewer hand-back on
+    PR #1096): ``_Pool.remaining_tokens()`` must clamp to ``max(0, max_tokens - spent)`` so an
+    unconfirmed cancel's fail-closed pool charge is NEVER negative — a negative charge would LOWER
+    the pool's recorded spend below what is already booked, undoing the exhaustion the pool exists
+    to enforce. Here "a" alone books MORE than the whole pooled ceiling (1_500 against a 1_000
+    ``max_tokens_total``); its unconfirmed cancel (202 -> None) must still charge exactly 0, never
+    a negative number that would claw the recorded spend back down.
+
+    "a" and "t" are siblings, so a naive scheduler could let "a" book its over-budget spend BEFORE
+    "t" is ever admitted — the pool would then already read as exhausted at "t"'s pre-dispatch
+    ``pool.would_exceed()`` gate, "t" would be skipped as ``budget_skipped``, and it would never
+    reach ``execute``/``cancel`` at all (there would be nothing to clamp).
+    ``_AdmittedThenOverBudgetBookThenUnconfirmedCancelHarness`` closes that gap: "t" is admitted
+    (its ``execute()`` entered, while the pool still has headroom) BEFORE "a" is allowed to book,
+    so "t" is always dispatched, always times out, and always reaches the clamp under test.
+
+    "b" depends on "a" only (never on "t"); it stays ``budget_skipped`` either way (-500 + 1_500 =
+    1_000 also exhausts the pool), so that assert alone cannot tell the clamp apart from its
+    absence — the ``costs`` asserts below are what actually proves the clamp."""
+    costs: list[int] = []
+    team = _team(
+        [
+            OHMMember(role="a", kind="agent", manifest_ref="org:x/a@1"),
+            OHMMember(role="t", kind="agent", manifest_ref="org:x/t@1"),
+            OHMMember(role="b", kind="agent", manifest_ref="org:x/b@1", depends_on=["a"]),
+        ],
+        budget=OHMBudget(max_tokens_total=1_000),
+    )
+    harness = _AdmittedThenOverBudgetBookThenUnconfirmedCancelHarness(
+        booked_role="a", booked_tokens=1_500, timeout_role="t"
+    )
+    result = await run_team_harness(team, harness, on_cost=costs.append)
+    assert len(harness.cancel_calls) == 1  # "t"'s timeout attempted exactly one cancel
+    # "a"'s real spend (1_500, already over the 1_000 ceiling) and "t"'s charge clamped to 0 — never
+    # a negative number (which would read as -500, clawing the recorded spend back down to 1_000).
+    assert sorted(costs) == [0, 1_500]
+    assert sum(costs) == 1_500  # recorded pool spend never DECREASES from what "a" already booked
+    assert result.member_status["b"] == "budget_skipped"  # pool stays exhausted either way
+
+
 async def test_unconfirmed_cancel_without_any_token_ceiling_charges_nothing() -> None:
     """Owner ruling (#1072, case 3:
     https://github.com/OraclousAI/oraclous-backend/issues/1072#issuecomment-5701622081): when the
@@ -315,3 +395,105 @@ async def test_pooled_ceiling_halts_next_member_after_orphan_spend() -> None:
     assert dispatched_refs == {"org:x/a@1", "org:x/c@1"}  # "b" never reached the harness at all
     assert result.member_status["c"] == "succeeded"  # "b"'s dependency delivered cleanly
     assert result.member_status["b"] == "budget_skipped"  # the POOL stopped it, not a block
+
+
+class _HybridTimeoutHarness:
+    """Skeleton members "a" (books tokens) and "t" (times out, unconfirmed cancel) sit ALONGSIDE a
+    trivial one-round loop ("w"/"c", unrelated) that exists only to route ``run_team_hybrid`` into
+    its loops-present branch — the branch that builds its OWN ``real_dispatch`` (threaded through
+    BOTH the ordinary skeleton path and ``run_loop_seam``), separate from the plain
+    ``run_team_harness`` delegation the acyclic tests above already cover (#1072 review finding C4,
+    PR #1094 qa-engineer). "t" waits for "a" to book first (mirrors
+    ``_EarlyBookThenUnconfirmedCancelHarness`` above) so the charged headroom is deterministic
+    regardless of scheduling order."""
+
+    def __init__(self, *, booked_tokens: int) -> None:
+        self.execute_calls: list[dict[str, Any]] = []
+        self.cancel_calls: list[dict[str, Any]] = []
+        self._booked_tokens = booked_tokens
+        self.booked_event = asyncio.Event()
+
+    async def execute(self, **kwargs: Any) -> dict[str, Any]:
+        self.execute_calls.append(kwargs)
+        role = (kwargs.get("manifest_ref") or "?/?").split("/")[-1].split("@")[0]
+        if role == "t":
+            await asyncio.wait_for(self.booked_event.wait(), timeout=5.0)
+            raise HarnessTimeout("harness call timed out: exceeded its wall-clock time limit")
+        result: dict[str, Any] = {"id": str(uuid.uuid4()), "status": "SUCCEEDED", "output": role}
+        if role == "a":
+            result["total_tokens"] = self._booked_tokens
+            self.booked_event.set()  # "a" has booked — safe now for "t" to be charged
+        return result
+
+    async def cancel(self, execution_id: uuid.UUID, **kwargs: Any) -> dict[str, Any] | None:
+        self.cancel_calls.append({"execution_id": execution_id, **kwargs})
+        return None  # 202: still winding down, the cancel never confirms
+
+
+async def test_hybrid_pool_only_unconfirmed_cancel_charges_headroom_and_gates_downstream() -> None:
+    """#1072 review finding C4 (PR #1094, qa-engineer): removing ``cost_so_far=cost_so_far`` from
+    the ONE ``make_harness_dispatch`` call inside ``run_team_hybrid``'s loops-present branch
+    (``real_dispatch``, shared by the ordinary skeleton path and every loop member via
+    ``run_loop_seam``) passes every existing test, so a pool-only HYBRID team would charge NOTHING
+    for an unconfirmed cancel — the pool would read as already exhausted (no live tally) and charge
+    0 instead of the true remaining headroom.
+
+    A trivial converging loop ("w"/"c") forces ``run_team_hybrid`` into that branch; "a" (skeleton)
+    books 300 tokens; "t" (skeleton) times out and its cancel never confirms (202 -> None); "b"
+    (skeleton) depends on "a" only, so the pool — never a blocked-by-upstream path — is the only
+    thing that can gate it. With the tally correctly threaded, "t" is charged the pool's REMAINING
+    headroom (1_000 - 300 = 700), exhausting the pool and skipping "b"; with the wiring dropped,
+    "t" is charged 0, the pool under-reports spend at 300, and "b" wrongly dispatches. The engine's
+    own ``cancel_timeout`` reaching ``cancel()`` on this path is pinned alongside since it is cheap
+    to check here."""
+
+    async def coordinate(loop: OHMLoop, results: dict[str, Any], rounds_left: int) -> list[str]:
+        return [r for r in loop.members if results.get(r) is None]
+
+    def done_check_for(loop: OHMLoop, diag: dict[str, Any] | None = None) -> Any:
+        async def done(results: dict[str, Any]) -> bool:
+            return all(results.get(r) is not None for r in loop.members)
+
+        return done
+
+    manifest = OHMManifest(
+        ohm_version="1.1",
+        metadata=OHMMetadata(id=uuid.uuid4(), name="t", owner_organization_id=_ORG, kind="team"),
+        members=[
+            OHMMember(role="w", kind="agent", manifest_ref="org:x/w@1"),
+            OHMMember(role="c", kind="agent", manifest_ref="org:x/c@1"),
+            OHMMember(role="a", kind="agent", manifest_ref="org:x/a@1"),
+            OHMMember(role="t", kind="agent", manifest_ref="org:x/t@1"),
+            OHMMember(role="b", kind="agent", manifest_ref="org:x/b@1", depends_on=["a"]),
+        ],
+        budget=OHMBudget(max_tokens_total=1_000),
+        orchestration=OHMOrchestration(
+            loops=[OHMLoop(members=["w", "c"], routing={"w": "do w", "c": "do c"})],
+            termination=OHMTermination(max_rounds=5),
+        ),
+        runtime=OHMRuntime(entrypoint="w"),
+    )
+    harness = _HybridTimeoutHarness(booked_tokens=300)
+    spend = {"n": 0}
+    costs: list[int] = []
+
+    def on_cost(tokens: int) -> None:
+        spend["n"] += tokens
+        costs.append(tokens)
+
+    from oraclous_execution_engine_service.services.team_run import run_team_hybrid
+
+    result = await run_team_hybrid(
+        manifest,
+        harness,
+        coordinate=coordinate,
+        done_check_for=done_check_for,
+        on_cost=on_cost,
+        cost_so_far=lambda: spend["n"],
+        cancel_timeout=42.0,
+    )
+    assert len(harness.cancel_calls) == 1  # "t"'s timeout attempted exactly one cancel
+    assert harness.cancel_calls[0]["timeout"] == 42.0  # the engine's own cancel_timeout, threaded
+    nonzero_costs = sorted(c for c in costs if c)  # "w"/"c" contribute on_cost(0) each, filtered
+    assert nonzero_costs == [300, 700]  # "a"'s real spend, then "t"'s charged remaining headroom
+    assert result.member_status["b"] == "budget_skipped"  # the pool gated it, not a block

@@ -106,6 +106,9 @@ class HarnessClient:
         manifest_inline: dict[str, Any] | None = None,
         manifest_ref: str | None = None,
         capability_ceiling: list[str] | None = None,
+        # #1072: the id the engine minted for this dispatch, so it can cancel the run before any
+        # response arrives. Serialised as str, matching the parent_execution_id/trace_id convention.
+        execution_id: uuid.UUID | None = None,
         parent_execution_id: uuid.UUID | None = None,
         trace_id: uuid.UUID | None = None,
         workspace_root: str | None = None,
@@ -149,6 +152,8 @@ class HarnessClient:
             raise HarnessClientError("a manifest_inline or manifest_ref is required")
         if capability_ceiling is not None:
             body["capability_ceiling"] = capability_ceiling
+        if execution_id is not None:
+            body["execution_id"] = str(execution_id)
         # run-tree correlation (#471): thread the root trace_id + the dispatching member's execution
         # so the harness stamps each member run into the same tree (serialised as str for JSON).
         if parent_execution_id is not None:
@@ -225,6 +230,33 @@ class HarnessClient:
             httpx.HTTPError
         ) as exc:  # transport (incl. connect/pool timeouts) → unreachable, FAILED
             raise HarnessClientError(f"harness unreachable: {type(exc).__name__}") from exc
+        if resp.status_code // 100 != 2:  # reachable but rejected — not unreachable (#251)
+            raise HarnessRejected(resp.status_code, _render_detail(resp.text))
+        return resp.json()
+
+    async def cancel(
+        self,
+        execution_id: uuid.UUID,
+        *,
+        timeout: float,  # noqa: ASYNC109 — forwarded to httpx
+    ) -> dict[str, Any] | None:
+        """Cancel an in-flight harness run (#1072). POSTs the harness's own cancel endpoint —
+        ``self._client`` already carries this client's own headers (ADR-018: the caller passes the
+        already-built downstream headers, so the harness sees the same tenant) — with the caller's
+        own ``timeout`` overriding the client's member-``execute`` default, so a fast cancel is
+        never held hostage by a long-running job's wall-clock budget.
+
+        A 200 means the harness settled the run before answering: returns the same
+        ``HarnessExecutionOut`` shape ``execute`` returns (carrying the true spend). A 202 means the
+        harness is still winding the loop down: returns ``None`` so the caller falls back to its own
+        budget handling. A non-2xx, non-202 response (e.g. 404 — unknown id or another org's id) is
+        reachable-but-refused → ``HarnessRejected`` (#251), distinct from a transport failure."""
+        try:
+            resp = await self._client.post(f"/v1/harnesses/{execution_id}/cancel", timeout=timeout)
+        except httpx.HTTPError as exc:  # harness unreachable — clean failure, not a 500
+            raise HarnessClientError(f"harness unreachable: {type(exc).__name__}") from exc
+        if resp.status_code == 202:
+            return None
         if resp.status_code // 100 != 2:  # reachable but rejected — not unreachable (#251)
             raise HarnessRejected(resp.status_code, _render_detail(resp.text))
         return resp.json()
