@@ -32,7 +32,8 @@
             "GATEWAY_TIMEOUT",
             "MODEL_NOT_CONNECTED",
             "IDEA_TOO_VAGUE",
-            "MODEL_CREDENTIAL_REQUIRED"
+            "MODEL_CREDENTIAL_REQUIRED",
+            "MODEL_CREDENTIAL_REJECTED"
           ]
         },
         "message": {

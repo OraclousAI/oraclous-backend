@@ -52,6 +52,11 @@ from oraclous_execution_engine_service.services.team_run_service import (
 READER_TEAM_NAME = "intake-reader"
 READER_ROLE = "reader"
 
+#: The harness's curated token for a member whose model provider refused the bound key (401/403).
+#: Mirrors ``LLM_CREDENTIAL_REJECTED`` in the harness runtime's ``domain/loop/tool_use.py``; the
+#: engine cannot import it (sibling Layer-3 service), so the literal is pinned here (#1108).
+LLM_CREDENTIAL_REJECTED = "llm_credential_rejected"
+
 _TERMINAL_RUN_STATES = frozenset({"SUCCEEDED", "FAILED", "REJECTED", "COST_BUDGET"})
 
 
@@ -240,6 +245,15 @@ class IntakeReadbackService:
                 checked_shape = True
             if run.state in _TERMINAL_RUN_STATES:
                 if run.state != "SUCCEEDED":
+                    codes = run.member_error_codes or {}
+                    if run.state == "FAILED" and codes.get(READER_ROLE) == LLM_CREDENTIAL_REJECTED:
+                        # The founder's own key was refused by the provider — name it so they
+                        # can fix the credential. Only the allow-listed code crosses (#1108).
+                        raise IntakeReadbackError(
+                            "the model provider refused the reader's credential",
+                            422,
+                            error_code="MODEL_CREDENTIAL_REJECTED",
+                        )
                     raise IntakeReadbackError(
                         f"the read-back run did not succeed (state {run.state})",
                         422,

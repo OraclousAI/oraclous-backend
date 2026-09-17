@@ -15,7 +15,7 @@ from enum import StrEnum
 
 
 class ErrorCode(StrEnum):
-    """The 17-value closed taxonomy. The frontend branches only on this code."""
+    """The 18-value closed taxonomy. The frontend branches only on this code."""
 
     VALIDATION_FAILED = "VALIDATION_FAILED"
     MALFORMED_REQUEST = "MALFORMED_REQUEST"
@@ -45,6 +45,10 @@ class ErrorCode(StrEnum):
     # the ORGANISATION's standing configuration is what is below the floor, so the screen has to
     # send the user to the credentials settings rather than to a model picker.
     MODEL_CREDENTIAL_REQUIRED = "MODEL_CREDENTIAL_REQUIRED"
+    # #1108 — the sibling of MODEL_CREDENTIAL_REQUIRED: a model credential IS connected, but the
+    # provider refuses the key (401/403 from the LLM client). "Connect one" and "replace the one you
+    # connected" send the user to different next steps, so they cannot share a code.
+    MODEL_CREDENTIAL_REJECTED = "MODEL_CREDENTIAL_REJECTED"
 
 
 @dataclass(frozen=True)
@@ -102,6 +106,15 @@ CODE_POLICY: dict[ErrorCode, CodePolicy] = {
         False,
         "Meaning-based search needs a model connected to your organisation. Connect one and try "
         "again.",
+    ),
+    # 422, not 401/403 — those are UNAUTHENTICATED/UNAUTHORIZED and a client logs the user out on
+    # them; the caller's own session is fine, it is the provider that refused the stored key. The
+    # message names no key and no credential (the client knows which credential_id it sent). Not
+    # retryable: the same key is refused again until it is replaced.
+    ErrorCode.MODEL_CREDENTIAL_REJECTED: CodePolicy(
+        422,
+        False,
+        "Your model provider refused the connected model key. Replace the key and try again.",
     ),
 }
 

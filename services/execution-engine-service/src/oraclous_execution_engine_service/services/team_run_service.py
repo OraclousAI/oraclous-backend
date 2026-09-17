@@ -135,14 +135,24 @@ class TeamRunError(Exception):
     ``error_type`` is a leak-safe machine token (never a value) the route surfaces in a STRUCTURED
     422 detail so the gateway maps it to VALIDATION_FAILED + a field-level issue (#483
     Option A) instead of the misleading MALFORMED_REQUEST a free-string detail falls back to. Only
-    used for 422s; other statuses keep a plain string detail."""
+    used for 422s; other statuses keep a plain string detail.
+
+    ``field`` optionally names the offending request-body field (a name, never a value) so the
+    422's ``loc`` points at it and the gateway reports ``details[].field`` as that name rather
+    than the bare ``body`` (#1108)."""
 
     def __init__(
-        self, message: str, status_code: int = 400, *, error_type: str = "team_run_invalid"
+        self,
+        message: str,
+        status_code: int = 400,
+        *,
+        error_type: str = "team_run_invalid",
+        field: str | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.error_type = error_type
+        self.field = field
 
 
 class TeamRunPreflightError(TeamRunError):
@@ -1462,6 +1472,7 @@ class TeamRunService:
                 "graph_id does not exist in your organisation",
                 422,
                 error_type="invalid_graph_id",
+                field="graph_id",
             )
 
     async def _seed_refresh(
@@ -2301,6 +2312,17 @@ class TeamRunService:
                 child_ids.append(execution_id)
             child_roles[execution_id] = role
 
+        # #1108 ruling 2c: role -> curated failure token. Carry forward only the roles this drive
+        # does NOT re-execute (the `completed` seed) — a role about to re-run starts clean, so a
+        # stale token never survives a re-run that now succeeds.
+        seeded = completed or {}
+        member_error_codes: dict[str, str] = {
+            role: code for role, code in (row.member_error_codes or {}).items() if role in seeded
+        }
+
+        def _record_member_failure(role: str, token: str) -> None:
+            member_error_codes[role] = token
+
         # #828 items 1+2: the live per-member status (now including the provisional "running") +
         # timings, seeded from any prior (resumed) drive. #832-style race: on_dispatch and the
         # settle checkpoint both write this row from concurrent members of a wide stage, so BOTH
@@ -2481,6 +2503,7 @@ class TeamRunService:
                 parent_execution_id=root_execution_id,
                 on_child=_record_child,
                 on_cost=cost_deltas.append,
+                on_member_failure=_record_member_failure,  # #1108: curated per-member token
                 workspace_root=row.workspace_root,  # file-native (#518): the run's working tree
                 graph_id=row.graph_id,  # graph substrate (#524): the run's bound graph
                 inputs=row.inputs,  # #599: user-seeded state for a member's fan_out.over: "$.<key>"
@@ -2533,6 +2556,7 @@ class TeamRunService:
                     # the finished members' real outputs on the row, and re-writing a stale copy
                     # over them is exactly the blanking this issue is about.
                     member_status=backfilled,
+                    member_error_codes=dict(member_error_codes),  # #1108
                 )
             await self._accrue_schedule_cost(
                 row, org, sum(cost_deltas)
@@ -2627,6 +2651,7 @@ class TeamRunService:
                 results=dict(result.results),
                 paused_at=list(result.paused_at),
                 member_status=member_status,  # ADR-042: per-member result (drives re-run target)
+                member_error_codes=dict(member_error_codes),  # #1108: role -> curated failure token
                 error_message=failed_summary,  # None unless a member failed/blocked
                 child_execution_ids=child_ids,  # the member executions that form this run's tree
                 cost_tokens=prior_cost + sum(cost_deltas),  # O4: the run's accumulated token cost

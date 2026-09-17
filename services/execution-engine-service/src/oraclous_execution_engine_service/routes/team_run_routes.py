@@ -52,9 +52,15 @@ from oraclous_execution_engine_service.services.team_run_service import (
 router = APIRouter(prefix="/v1/engine", tags=["engine-team-runs"])
 
 
+def _loc(exc: TeamRunError) -> list[str]:
+    """``["body", field]`` when the service named the offending field (#1108), else ``["body"]``."""
+    return ["body", exc.field] if exc.field else ["body"]
+
+
 def _http(exc: TeamRunError) -> HTTPException:
     """Map a ``TeamRunError`` to an ``HTTPException`` (#483 Option A). A **422** gets a
-    STRUCTURED detail (``[{"loc":["body"], "type": <token>, "msg": str(exc)}]``) so the gateway's
+    STRUCTURED detail (``[{"loc":["body"], "type": <token>, "msg": str(exc)}]``, with ``loc``
+    widened to ``["body", field]`` when the error names a field) so the gateway's
     422 passthrough surfaces ``VALIDATION_FAILED`` with a field-level issue — instead of the
     misleading ``MALFORMED_REQUEST`` a free-string detail falls back to. The gateway drops the
     value-reflecting ``msg`` (leak-safe — Interface Contracts §3 rule 8), keeping only loc + type.
@@ -62,7 +68,7 @@ def _http(exc: TeamRunError) -> HTTPException:
     if exc.status_code == 422:
         return HTTPException(
             status_code=422,
-            detail=[{"loc": ["body"], "type": exc.error_type, "msg": str(exc)}],
+            detail=[{"loc": _loc(exc), "type": exc.error_type, "msg": str(exc)}],
         )
     return HTTPException(status_code=exc.status_code, detail=str(exc))
 

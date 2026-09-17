@@ -127,6 +127,13 @@ class EngineTeamRun(BaseModel):
     # status) derives from the earliest started_at here rather than the row's create time (the
     # queue time, not the drive start). Empty until the first drive records it.
     member_timings: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    # ── per-member curated error codes (#1108 ruling 2c; additive) ──────────────────────────────
+    # role -> curated error token (e.g. "llm_credential_rejected") for a member whose harness run
+    # FAILED with an allow-listed error_type; never provider text. Written at settle; a re-driven
+    # role's stale entry is cleared. server_default mirrors migration 0030.
+    member_error_codes: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
     # ── per-loop checkpoint (ADR-043 #552 PR-C; additive) ─────────────────────────────────────
     # "<loop_index>" -> {round, started_at, status} — set by the hybrid conductor so a loop resumes
     # at a ROUND boundary (the round counter + the ORIGINAL wall-clock start survive a HITL pause /

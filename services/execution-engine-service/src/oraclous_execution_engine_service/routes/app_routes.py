@@ -40,13 +40,18 @@ from oraclous_execution_engine_service.services.team_run_service import (
 router = APIRouter(prefix="/v1/engine", tags=["engine-apps"])
 
 
+def _loc(exc: TeamRunError) -> list[str]:
+    # #1108: attribute the 422 to the named body field when the service knows it.
+    return ["body", exc.field] if exc.field else ["body"]
+
+
 def _http(exc: TeamRunError) -> HTTPException:
     # #483 Option A: a STRUCTURED 422 detail (leak-safe machine token in `type`) so the gateway
     # maps it to VALIDATION_FAILED + a field-level issue; other statuses keep a plain detail.
     if exc.status_code == 422:
         return HTTPException(
             status_code=422,
-            detail=[{"loc": ["body"], "type": exc.error_type, "msg": str(exc)}],
+            detail=[{"loc": _loc(exc), "type": exc.error_type, "msg": str(exc)}],
         )
     return HTTPException(status_code=exc.status_code, detail=str(exc))
 
