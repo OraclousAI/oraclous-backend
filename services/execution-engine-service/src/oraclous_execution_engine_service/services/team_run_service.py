@@ -135,14 +135,24 @@ class TeamRunError(Exception):
     ``error_type`` is a leak-safe machine token (never a value) the route surfaces in a STRUCTURED
     422 detail so the gateway maps it to VALIDATION_FAILED + a field-level issue (#483
     Option A) instead of the misleading MALFORMED_REQUEST a free-string detail falls back to. Only
-    used for 422s; other statuses keep a plain string detail."""
+    used for 422s; other statuses keep a plain string detail.
+
+    ``field`` optionally names the offending request-body field (a name, never a value) so the
+    422's ``loc`` points at it and the gateway reports ``details[].field`` as that name rather
+    than the bare ``body`` (#1108)."""
 
     def __init__(
-        self, message: str, status_code: int = 400, *, error_type: str = "team_run_invalid"
+        self,
+        message: str,
+        status_code: int = 400,
+        *,
+        error_type: str = "team_run_invalid",
+        field: str | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.error_type = error_type
+        self.field = field
 
 
 class TeamRunPreflightError(TeamRunError):
@@ -1462,6 +1472,7 @@ class TeamRunService:
                 "graph_id does not exist in your organisation",
                 422,
                 error_type="invalid_graph_id",
+                field="graph_id",
             )
 
     async def _seed_refresh(

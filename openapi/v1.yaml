@@ -2551,7 +2551,14 @@ paths:
         "403": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/CredentialsRequired" }
-        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "422":
+          description: >-
+            The request failed validation (VALIDATION_FAILED; carries details[]). A `graph_id`
+            that does not name a graph in the caller's organisation is reported as
+            details[] = [{field: graph_id, issue: INVALID_GRAPH_ID}].
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
   /v1/engine/team-drafts:
     get:
       tags: [engine]
@@ -3398,6 +3405,7 @@ components:
     ErrorDetail:
       type: object
       additionalProperties: false
+      x-stable-issue-tokens: [INVALID_GRAPH_ID]
       required: [field, issue]
       properties:
         field:
@@ -3407,7 +3415,11 @@ components:
         issue:
           type: string
           pattern: "^[A-Z][A-Z0-9_]*$"
-          description: Machine-readable issue token (e.g. INVALID_FORMAT). Describes the problem, not the value.
+          description: >-
+            Machine-readable issue token (e.g. INVALID_FORMAT). Describes the problem, not the
+            value. Only the tokens listed in this schema's `x-stable-issue-tokens` are a stable
+            contract; any other token may change without notice, including every token derived
+            from request-model validation (e.g. STRING_TOO_SHORT, MISSING).
     ErrorEnvelope:
       type: object
       additionalProperties: false
