@@ -32,6 +32,7 @@ from oraclous_ohm.manifest import OHMManifest, OHMMember, OHMMetadata, OHMRuntim
 
 from oraclous_execution_engine_service.core.rls import org_scope
 from oraclous_execution_engine_service.domain.app_form import FormShapeError, parse_form_draft
+from oraclous_execution_engine_service.domain.member_error_codes import LLM_CREDENTIAL_REJECTED
 from oraclous_execution_engine_service.domain.model_answer import first_json_object
 from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
 from oraclous_execution_engine_service.services.compiler_run_service import (
@@ -244,6 +245,19 @@ class AppFormDraftService:
                 checked_shape = True
             if run.state in _TERMINAL_RUN_STATES:
                 if run.state != "SUCCEEDED":
+                    # ``getattr``: rows built before #1108's column existed lack the attribute
+                    # outright, and absence must read the same as an empty map.
+                    codes = getattr(run, "member_error_codes", None) or {}
+                    if run.state == "FAILED" and codes.get(DRAFTER_ROLE) == LLM_CREDENTIAL_REJECTED:
+                        # The provider refused the caller's OWN key mid-draft. That is fixable,
+                        # unlike a model that answered badly, so it is named rather than folded
+                        # into the generic refusal. Only the allow-listed code crosses the gateway
+                        # (#1108); the provider's own text never travels.
+                        raise AppFormDraftError(
+                            "the model provider refused the drafter's credential",
+                            422,
+                            error_code="MODEL_CREDENTIAL_REJECTED",
+                        )
                     raise AppFormDraftError(
                         f"the drafting run did not succeed (state {run.state})",
                         422,
