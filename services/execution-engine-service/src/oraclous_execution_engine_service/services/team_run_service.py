@@ -2227,7 +2227,9 @@ class TeamRunService:
             results=row.results, member_status=row.member_status, manifest=row.manifest
         )
         if not rerunnable and not outcome_faulted:
-            # a FAILED run with no recorded member failure (e.g. a hard drive crash) — a no-op
+            # a FAILED run whose members all settled with no outcome-critical fault (e.g. a
+            # revision-limit rejection or a budget halt) — a no-op. A drive crash is NOT this case:
+            # its backfill (#1069) always leaves every unsettled member "failed".
             raise TeamRunError(
                 "team run has no failed or blocked members to re-run",
                 409,
@@ -2373,8 +2375,8 @@ class TeamRunService:
 
         # #819: the durability hook. Every member that reaches a terminal status is written onto the
         # RUNNING row immediately, so a worker killed mid-drive (Celery's SoftTimeLimitExceeded at
-        # 50 minutes, SIGKILL at 60) leaves the finished members recoverable instead of a FAILED row
-        # with an empty member_status that /rerun answers 409 nothing_to_rerun. ``checkpoint`` is a
+        # 50 minutes, SIGKILL at 60) leaves the finished members recoverable, so a /rerun resumes
+        # past them instead of re-driving the whole team from the beginning. ``checkpoint`` is a
         # write on the live row, NOT a transition — the run stays RUNNING throughout.
         settled_status: dict[str, str] = {}
         # §3.7 (#826): which (role, status, output_hash) settles have already had an
@@ -2514,8 +2516,9 @@ class TeamRunService:
             #
             # What the row still needs is a re-run TARGET: a member in flight when the kill landed
             # has no status of its own, so /rerun's failed-or-blocked gate would find nothing even
-            # though real work survived. Backfill the unreached members to "failed" — but ONLY over
-            # at least one settled member (see ``_backfill_unreached``).
+            # though real work survived. Backfill every unreached member to "failed" — even when no
+            # member settled, so a run that dies early re-runs from the beginning (#1069; see
+            # ``_backfill_unreached``).
             backfilled = self._backfill_unreached(settled_status, team)
             with org_scope(org):
                 updated, _ = await self._team_runs.transition(
@@ -2529,7 +2532,7 @@ class TeamRunService:
                     # NB ``results`` is deliberately NOT written here — the checkpoints already put
                     # the finished members' real outputs on the row, and re-writing a stale copy
                     # over them is exactly the blanking this issue is about.
-                    **({"member_status": backfilled} if backfilled is not None else {}),
+                    member_status=backfilled,
                 )
             await self._accrue_schedule_cost(
                 row, org, sum(cost_deltas)
@@ -2652,11 +2655,9 @@ class TeamRunService:
         return consumed
 
     @staticmethod
-    def _backfill_unreached(
-        member_status: Mapping[str, str], team: OHMManifest
-    ) -> dict[str, str] | None:
+    def _backfill_unreached(member_status: Mapping[str, str], team: OHMManifest) -> dict[str, str]:
         """#819 decision 2: mark every member a dying drive never reached as "failed", so /rerun
-        has a target. Returns the completed map, or ``None`` when the caller should write nothing.
+        has a target. Returns the completed map, always — the caller writes it unconditionally.
 
         A member that was mid-dispatch when the kill landed is UNSETTLED — before #828 that meant
         no entry at all, and since #828 it can also mean a durable ``"running"`` entry written at
@@ -2672,14 +2673,13 @@ class TeamRunService:
         every other member succeeded has nothing failed or blocked, so /rerun answers 409 forever
         and the unfinished member can never be retried.
 
-        The guard is that this applies ONLY over at least one SETTLED member — a "running" entry
-        does not count, or it would silently narrow ADR-042's 409 further than #819 intended. A run
-        that dies before member 1 delivers (an unreachable harness, an immediate kill) has no
-        partial work worth resuming, so it keeps its record and still answers 409 — the commonest
-        failure path, and today's behaviour on it must not change.
+        #1069 ruling: there is NO "at least one settled member" guard. A run that dies before any
+        member settles (an empty map, or only "running" entries) is backfilled too, so every member
+        comes back "failed" and /rerun re-drives it from the beginning. The row already carries
+        the manifest, inputs and model binding, so that re-run is exactly what the user would
+        otherwise rebuild by hand. A FAILED run whose members all settled with no outcome-critical
+        fault never passes through here, so it still answers 409 ``nothing_to_rerun``.
         """
-        if not any(status != "running" for status in member_status.values()):
-            return None
         filled = {
             role: ("failed" if status == "running" else status)
             for role, status in member_status.items()
@@ -2742,11 +2742,9 @@ class TeamRunService:
             # a manifest that no longer parses (a schema move since the run was created) must not
             # break the sweep — the row still gets failed, just without the re-run backfill.
             with contextlib.suppress(Exception):
-                backfilled = self._backfill_unreached(
+                fields["member_status"] = self._backfill_unreached(
                     row.member_status or {}, self._load_team(row.manifest)
                 )
-                if backfilled is not None:
-                    fields["member_status"] = backfilled
             with org_scope(row.organisation_id):
                 _, applied = await self._team_runs.transition(
                     row.id,
