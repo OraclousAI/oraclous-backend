@@ -286,6 +286,33 @@ async def test_refine_nl_pending_returns_202_with_the_run_id() -> None:
     assert resp.json() == {"op_drafter_run_id": str(run_id), "status": "running"}
 
 
+async def test_refine_nl_credential_rejection_returns_422_with_only_the_error_code() -> None:
+    """The op-drafter's own run was refused for a credential the provider rejected (#1109) — the
+    body carries ONLY ``{"error_code": "MODEL_CREDENTIAL_REJECTED"}``, the one shape the gateway's
+    error-body drain lets through (mirrors ``intake_routes.py``'s ``_http`` and #1108's
+    ``test_a_provider_refused_reader_key_names_its_code_and_leaks_nothing``). ``TeamRunError``
+    does not accept an ``error_code`` kwarg yet, so the attribute is set after construction — this
+    stays RED until BOTH the constructor and ``_http``'s branch land, either of which currently
+    lets the old structured-422 array shape through instead."""
+    sentinel_message = "op-drafter rejected credential cred-SENTINEL-7a3d (sk-or-v1-DO-NOT-LEAK)"
+
+    class _Svc:
+        async def refine_nl(self, draft_id: uuid.UUID, principal: Principal, **kw: Any) -> Any:
+            err = TeamRunError(sentinel_message, 422, error_type="op_drafter_failed")
+            err.error_code = "MODEL_CREDENTIAL_REJECTED"  # type: ignore[attr-defined] — #1109
+            raise err
+
+    async with _client(_Svc()) as c:
+        resp = await c.post(
+            f"/v1/engine/team-drafts/{uuid.uuid4()}/refine-nl",
+            json={"instruction": "add a fact-checker", "models": [{"role": "primary"}]},
+        )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"error_code": "MODEL_CREDENTIAL_REJECTED"}
+    assert "sk-or-v1-DO-NOT-LEAK" not in resp.text
+    assert "cred-SENTINEL-7a3d" not in resp.text
+
+
 async def test_refine_nl_requires_exactly_one_of_instruction_or_run_id() -> None:
     async with _client(object()) as c:
         both = await c.post(

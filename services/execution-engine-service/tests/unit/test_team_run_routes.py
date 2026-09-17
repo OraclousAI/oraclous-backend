@@ -151,6 +151,31 @@ async def test_post_team_run_non_422_keeps_string_detail() -> None:
     assert isinstance(resp.json()["detail"], str)  # string detail, not the structured list
 
 
+async def test_post_team_run_credential_rejection_returns_only_the_error_code() -> None:  # #1109
+    # mirrors intake_routes.py's _http: a TeamRunError carrying error_code bypasses the structured
+    # [{loc,type,msg}] 422 shape entirely — the body is ONLY {"error_code": ...}, the one thing the
+    # gateway's error-body drain lets through. TeamRunError does not accept an error_code kwarg yet
+    # (set after construction here), and this route's _http does not branch on it yet either — RED
+    # until BOTH land.
+    class BadService:
+        async def create(self, *args: Any, **kwargs: Any) -> EngineTeamRun:
+            err = TeamRunError(
+                "the op-drafter run did not succeed (state FAILED)",
+                422,
+                error_type="op_drafter_failed",
+            )
+            err.error_code = "MODEL_CREDENTIAL_REJECTED"  # type: ignore[attr-defined] — #1109
+            raise err
+
+    async with await _client(BadService()) as c:
+        resp = await c.post(
+            "/v1/engine/team-runs",
+            json={"manifest": {}, "sub_harnesses": {}, "gate_decisions": {}},
+        )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"error_code": "MODEL_CREDENTIAL_REJECTED"}
+
+
 async def test_get_tree_returns_root_and_children() -> None:  # ADR-037 D3 / #471
     rid, c1, c2 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     row = _queued_row({"kind": "team"})
