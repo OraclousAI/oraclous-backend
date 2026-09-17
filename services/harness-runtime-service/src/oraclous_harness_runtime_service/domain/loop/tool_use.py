@@ -52,6 +52,7 @@ from oraclous_harness_runtime_service.domain.link_provenance import (
     strip_unverified_links,
 )
 from oraclous_harness_runtime_service.domain.llm.base import LLMClient, Message, ToolSpec
+from oraclous_harness_runtime_service.domain.llm.openai_compatible import LLMClientError
 from oraclous_harness_runtime_service.domain.loop.progress import LoopProgress
 from oraclous_harness_runtime_service.domain.policy import PolicyEnvelope
 from oraclous_harness_runtime_service.domain.tool_schemas import NonObjectArgumentsRefused
@@ -87,6 +88,20 @@ _NAME_MATCH_CUTOFF = 0.6
 #: every failing turn, so an unbounded catalogue would grow the prompt once per iteration — for a
 #: member that is already failing. Name a sample and stop.
 _MAX_LISTED_TOOLS = 20
+
+
+#: #1108 (ruling 2a): the structured ``error_type`` for a provider-refused model key (401/403), so
+#: downstream surfaces can act on a credential rejection without parsing the exception prose.
+LLM_CREDENTIAL_REJECTED = "llm_credential_rejected"
+_CREDENTIAL_REJECTED_STATUSES = frozenset({401, 403})
+
+
+def _llm_error_type(exc: BaseException) -> str:
+    """The ``error_type`` for a failed LLM call: the credential-rejection token for a 401/403
+    ``LLMClientError``, otherwise the exception class name (unchanged behaviour)."""
+    if isinstance(exc, LLMClientError) and exc.status_code in _CREDENTIAL_REJECTED_STATUSES:
+        return LLM_CREDENTIAL_REJECTED
+    return type(exc).__name__
 
 
 def _is_transient(exc: BaseException) -> bool:
@@ -2037,7 +2052,7 @@ async def run_tool_use_loop(
                 total_tokens=tokens_used,
                 input_tokens=input_used,
                 output_tokens=output_used,
-                error_type=type(exc).__name__,
+                error_type=_llm_error_type(exc),
                 error_message=str(exc),
                 served_citation_ids=list(served_citation_ids),
                 fetched_urls=list(fetched_urls),
