@@ -30,6 +30,16 @@ class ConfigureCredentials(BaseModel):
     credential_mappings: dict[str, str]
 
 
+class UpdateConfiguration(BaseModel):
+    """Replace an instance's stored ``configuration`` wholesale.
+
+    A full replace, not a merge: the caller owns the whole document (the runtime merges the run's
+    keys onto what it read before pushing, #1130), so a key it deliberately dropped really goes.
+    """
+
+    configuration: dict[str, Any]
+
+
 class InstanceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

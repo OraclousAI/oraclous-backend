@@ -143,6 +143,33 @@ class InstanceRepository:
                 await session.refresh(row)
                 return row
 
+    async def set_configuration(
+        self,
+        instance_id: uuid.UUID,
+        organisation_id: uuid.UUID,
+        configuration: dict[str, Any],
+    ) -> ToolInstance | None:
+        """Replace the instance's stored configuration (#1130).
+
+        Org-scoped like every other write here: the org-GUC is bound for RLS and the predicate is
+        repeated in the WHERE clause, so an instance belonging to another org is simply not found.
+        """
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                async with session.begin():
+                    result = await session.execute(
+                        select(ToolInstance).where(
+                            ToolInstance.id == instance_id,
+                            ToolInstance.organisation_id == organisation_id,
+                        )
+                    )
+                    row = result.scalars().first()
+                    if row is None:
+                        return None
+                    row.configuration = configuration
+                await session.refresh(row)
+                return row
+
     async def set_credentials_and_status(
         self,
         instance_id: uuid.UUID,

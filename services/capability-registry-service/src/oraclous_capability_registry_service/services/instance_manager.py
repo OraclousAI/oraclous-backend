@@ -26,6 +26,7 @@ from oraclous_capability_registry_service.schema.instance_schema import (
     ConfigureCredentials,
     CreateInstance,
     InstanceOut,
+    UpdateConfiguration,
 )
 
 
@@ -80,6 +81,23 @@ class InstanceManager:
 
     async def list(self, *, organisation_id: uuid.UUID) -> list[InstanceOut]:
         return [_out(r) for r in await self._instances.list_by_org(organisation_id)]
+
+    async def update_configuration(
+        self, *, instance_id: uuid.UUID, body: UpdateConfiguration, organisation_id: uuid.UUID
+    ) -> InstanceOut:
+        """Replace the instance's stored configuration (#1130).
+
+        The dispatch path reads this row's ``configuration`` fresh on every execute, so a run that
+        reuses a deterministically-named instance rebinds its own per-run keys here rather than
+        inheriting whichever run minted the instance first. Credential mappings and lifecycle
+        status are untouched — this writes configuration only.
+        """
+        row = await self._instances.set_configuration(
+            instance_id, organisation_id, body.configuration
+        )
+        if row is None:
+            raise InstanceNotFoundError("instance not found")
+        return _out(row)
 
     async def configure_credentials(
         self, *, instance_id: uuid.UUID, body: ConfigureCredentials, organisation_id: uuid.UUID
