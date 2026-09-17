@@ -157,6 +157,8 @@ class TrustedBindings(NamedTuple):
 #: #1111: the shape a tool execution's curated ``error_type`` may take (the registry's connectors
 #: spell them ``PROVIDER_RATE_LIMITED``, ``INVALID_INPUT``, ...). Anything else is not carried.
 _EXECUTION_ERROR_TYPE = re.compile(r"^[A-Z0-9_]{1,64}$")
+
+
 class _ProviderError(NamedTuple):
     """How one curated provider token is classified, plus this service's own words for it.
 
@@ -185,9 +187,7 @@ _PROVIDER_ERROR_TYPES: dict[str, _ProviderError] = {
     # exists to close. Ambiguous, because the token is emitted from BOTH halves of the exchange:
     # a connection that never opened carries it, and so does a read timeout after the provider
     # already acted. So a retrieval retries it and an operation that may write does not.
-    "PROVIDER_UNREACHABLE": _ProviderError(
-        True, True, "the tool's provider could not be reached"
-    ),
+    "PROVIDER_UNREACHABLE": _ProviderError(True, True, "the tool's provider could not be reached"),
     "PROVIDER_QUOTA_EXHAUSTED": _ProviderError(
         False, False, "the tool's credential has no remaining quota"
     ),
