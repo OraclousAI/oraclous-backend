@@ -23,6 +23,7 @@ the fake repo's recorded kwargs), and ``EngineTeamRun`` has no such column (a ``
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 
@@ -237,8 +238,8 @@ def _agent(role: str, deps: list[str] | None = None) -> dict[str, Any]:
     }
 
 
-def _team(members: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
+def _team(members: list[dict[str, Any]], *, max_wall_seconds: int | None = None) -> dict[str, Any]:
+    team: dict[str, Any] = {
         "ohm_version": "1.1",
         "metadata": {
             "id": str(uuid.uuid4()),
@@ -249,6 +250,9 @@ def _team(members: list[dict[str, Any]]) -> dict[str, Any]:
         "members": members,
         "runtime": {"entrypoint": members[0]["role"]},
     }
+    if max_wall_seconds is not None:
+        team["orchestration"] = {"termination": {"max_wall_seconds": max_wall_seconds}}
+    return team
 
 
 async def _run(svc: TeamRunService, principal: Principal, **kw: Any) -> EngineTeamRun:
@@ -322,6 +326,69 @@ async def test_a_redrive_clears_a_stale_error_code_before_the_role_reexecutes() 
     result = await _svc(repo, _RoleFailureHarness({})).drive(row.id, _principal())
 
     assert result.member_error_codes == {}
+
+
+# ── the abort branch (drive()'s outer except Exception) ALSO carries the token ────────────────────
+
+
+class _FailedRoleThenSlowHarness:
+    """'a' fails immediately with a curated token; 'b' is independent (same stage, so 'a' failing
+    does not block it) and sleeps past the team's ``max_wall_seconds`` so the stage's fan-in
+    barrier times out and ``run_team`` raises ``OHMError`` -- a genuine team-level abort, never a
+    per-member ADR-042 failure."""
+
+    def __init__(self, *, failing_role: str, error_type: str, slow_role: str, delay: float) -> None:
+        self._failing_role = failing_role
+        self._error_type = error_type
+        self._slow_role = slow_role
+        self._delay = delay
+
+    def _role_of(self, manifest_ref: str | None) -> str:
+        return manifest_ref.split("/")[-1].split("@")[0] if manifest_ref else "?"
+
+    async def execute(self, **kw: Any) -> dict[str, Any]:
+        role = self._role_of(kw.get("manifest_ref"))
+        if role == self._failing_role:
+            return {
+                "id": str(uuid.uuid4()),
+                "status": "FAILED",
+                "output": None,
+                "error_type": self._error_type,
+            }
+        if role == self._slow_role:
+            await asyncio.sleep(self._delay)
+        return {"id": str(uuid.uuid4()), "status": "SUCCEEDED", "output": f"{role}-out"}
+
+
+async def test_a_drive_abort_still_persists_the_curated_token_captured_before_it() -> None:
+    # QA gap: `drive()`'s outer `except Exception` fail-closed branch (the G-C "never strand
+    # RUNNING" handler, ~L2540 of team_run_service.py) ALSO writes `member_error_codes` onto its
+    # terminal `transition(...)` call -- not only the normal settle path the tests above pin.
+    # Removing that kwarg from the abort branch fails nothing else in this file.
+    #
+    # 'a' fails immediately with a curated token, captured via `on_member_failure` the instant its
+    # dispatch fails -- well before the abort. 'b' is independent (same stage as 'a', so 'a'
+    # failing does not mark it "blocked") and sleeps 2s, past the team's `max_wall_seconds=1`
+    # deadline: the stage's fan-in barrier times out and `run_team` raises `OHMError` straight
+    # into `drive()`'s blanket handler -- the same genuine team-level abort
+    # `test_a_wall_clock_breach_keeps_the_finished_members_output`
+    # (test_team_run_checkpoint.py) uses to reach it, never the ADR-042 per-member branch the
+    # other tests in this file exercise.
+    repo = FakeTeamRunRepo()
+    harness = _FailedRoleThenSlowHarness(
+        failing_role="a", error_type="llm_credential_rejected", slow_role="b", delay=2.0
+    )
+    row = await _run(
+        _svc(repo, harness),
+        _principal(),
+        manifest=_team([_agent("a"), _agent("b")], max_wall_seconds=1),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+    assert row.state == "FAILED"
+    # the genuine team-level abort, not a normal ADR-042 settle
+    assert "max_wall_seconds" in (row.error_message or "")
+    assert _settle_transition(repo)["member_error_codes"] == {"a": "llm_credential_rejected"}
 
 
 # ── the ORM model carries the column ───────────────────────────────────────────────────────────
