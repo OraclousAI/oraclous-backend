@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, status
 
 from oraclous_knowledge_retriever_service.core.dependencies import (
+    MODEL_CREDENTIAL_REJECTED_DETAIL,
     MODEL_CREDENTIAL_REQUIRED_DETAIL,
     RetrievalServiceDep,
     UserIdDep,
@@ -20,6 +21,7 @@ from oraclous_knowledge_retriever_service.schema.search_schemas import (
 from oraclous_knowledge_retriever_service.services.retrieval_service import (
     IDENTITY_MISMATCH_DETAIL,
     EmbedderIdentityMismatch,
+    QueryEmbeddingCredentialExhausted,
     QueryEmbeddingCredentialRejected,
     QueryEmbeddingUnavailable,
 )
@@ -39,14 +41,27 @@ def _identity_mismatch() -> HTTPException:
 def _embedding_failed(exc: QueryEmbeddingUnavailable) -> HTTPException:
     """The credential resolved, then the provider itself failed the embed call.
 
-    A REJECTED credential reuses the existing MODEL_CREDENTIAL_REQUIRED refusal: the organisation's
-    credential is not usable and the fix is the same one that message already names, and reusing it
-    keeps the console's actionable copy without minting an error code that would need both the
-    closed taxonomy and the gateway's relay allow-list to carry it. Anything else is the provider
-    being unreachable — the platform's problem, not the caller's, so 503 and a retry, never a bare
-    500 with the provider's own text in it.
+    Three answers, because the caller's next move differs for each (#1109 ruling 3):
+
+      * REFUSED credential (401/403) -> 422 MODEL_CREDENTIAL_REJECTED. The organisation stored a
+        credential and designated it; it has to be REPLACED. This used to reuse
+        MODEL_CREDENTIAL_REQUIRED purely to avoid minting a code the closed taxonomy and the
+        gateway's relay allow-list did not carry — both carry this one now, and REQUIRED's advice
+        ("store one and designate it") is simply wrong for a key that is already stored.
+      * EXHAUSTED credential (429/quota) -> 422 MODEL_CREDENTIAL_REQUIRED, unchanged. The key is
+        good but out of quota; a code of its own is a separate decision, not this one.
+      * anything else -> 503. The provider was unreachable: the platform's problem, not the
+        caller's, so a retry rather than a bare 500 with the provider's own text in it.
+
+    None of the three relays the provider's message — it can name internal hosts (rule 8); each
+    detail is a curated line.
     """
     if isinstance(exc, QueryEmbeddingCredentialRejected):
+        return HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=MODEL_CREDENTIAL_REJECTED_DETAIL,
+        )
+    if isinstance(exc, QueryEmbeddingCredentialExhausted):
         return HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=MODEL_CREDENTIAL_REQUIRED_DETAIL,
