@@ -54,6 +54,7 @@ from oraclous_harness_runtime_service.domain.link_provenance import (
 from oraclous_harness_runtime_service.domain.llm.base import LLMClient, Message, ToolSpec
 from oraclous_harness_runtime_service.domain.loop.progress import LoopProgress
 from oraclous_harness_runtime_service.domain.policy import PolicyEnvelope
+from oraclous_harness_runtime_service.domain.tool_schemas import NonObjectArgumentsRefused
 from oraclous_harness_runtime_service.models.enums import HarnessStatus, StepKind
 
 # A dispatch maps a selected tool + its args to a JSON-able result (or raises, which is fed back).
@@ -1482,6 +1483,39 @@ async def run_tool_use_loop(
             protocol_shape=protocol_shape,
         )
 
+    def _refuse_non_object_args(tc: dict[str, Any], spec: ToolSpec) -> None:
+        """#1006: answer a call whose ``args`` is not a JSON object with #1004 item 4's coded
+        refusal, before a pre-dispatch gate subscripts it. Never dispatched.
+
+        The model sees the byte-identical refusal ``dispatch_payload`` raises for the same shape
+        (the message is built by ``NonObjectArgumentsRefused`` itself and rendered the way the
+        dispatch ``except`` renders any refusal), so there is one vocabulary for "you sent the
+        wrong shape" wherever the loop catches it. The ``status=error`` receipt keeps a HITL
+        resume from crediting the call's arguments, as on the site and JSON-repair gates.
+        """
+        refusal = NonObjectArgumentsRefused(tool=spec.name)
+        content = _redact(
+            json.dumps({"error": type(refusal).__name__, "detail": str(refusal)}), redactors
+        )
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "name": tc["name"],
+                "content": f"{content}\n[receipt: source_tool_call_id={tc['id']} status=error]",
+            }
+        )
+        steps.append(
+            LoopStep(
+                len(steps),
+                StepKind.TOOL,
+                f"{spec.binding}.{spec.operation}",
+                "error",
+                _truncate(content),
+                tool_call_id=tc["id"],
+            )
+        )
+
     async def _run_tool_calls(
         tool_calls: list[dict[str, Any]], iteration: int, approved_id: str | None
     ) -> LoopResult | None:
@@ -1557,6 +1591,9 @@ async def run_tool_use_loop(
                 and spec.binding in trusted_web_search_bindings
                 and spec.operation == _SITE_RESTRICTED_OPERATION
             ):
+                if not isinstance(tc["args"], dict):
+                    _refuse_non_object_args(tc, spec)
+                    continue  # never dispatched — `_site_violation` needs an object to read
                 violation = _site_violation(tc["args"], policy.required_sites)
                 if violation is not None:
                     site_blocked = violation
