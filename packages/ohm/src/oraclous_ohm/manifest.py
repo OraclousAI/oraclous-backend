@@ -179,6 +179,10 @@ class OHMMember(BaseModel):
     # member still validates.
     tool_rationale: dict[str, str] = Field(default_factory=dict)
     subgoal: str | None = None
+    # #1085: a one-sentence, third-person DISPLAY description of what this member does, shown to
+    # someone before they run the team (an app read's plan step). Never the member's prompt — that
+    # is `subgoal`, and the description is never derived from it. None → nothing declared.
+    description: str | None = None
     # #577: the member's ## Handoff Next-task — the producer's scoped objective for its downstream.
     # The acyclic dispatch threads it into each consumer's objective_slice (mirroring the loop's
     # routing at orchestrate.py), so a consumer gets the producer's per-edge task, not a static
