@@ -160,7 +160,14 @@ class ToolExecutionService:
         organisation_id: uuid.UUID,
         user_id: uuid.UUID,
         principal_type: str = "agent",
+        run_context: dict[str, Any] | None = None,
     ) -> ExecutionOut:
+        """Dispatch one operation on a configured instance.
+
+        ``run_context`` (#1130) is the identity of the RUN making this call — a closed set of
+        per-run keys (``domain/run_context.py``) that overlays the instance's stored configuration
+        for this dispatch only. It reaches here from the internal plane alone.
+        """
         instance = await self._instances.get_by_id(instance_id, organisation_id)
         if instance is None:
             await self._emit_refused(
@@ -286,6 +293,14 @@ class ToolExecutionService:
         )
 
         instance_config = dict(instance.configuration or {})
+        # #1130: the run that is dispatching says who it is, and that WINS over the stored row.
+        # The row is shared — every run of the same seeded app dispatches through it — so with two
+        # runs in flight the row describes whichever materialised last, and the other run's
+        # artifacts get filed under a stranger's producer/graph/working tree. What arrives with the
+        # call cannot be overtaken mid-run by anyone. Absent (a member's own direct dispatch, or a
+        # run that binds nothing) → the stored configuration stands, exactly as before.
+        if run_context:
+            instance_config.update(run_context)
         # File-native blackboard (ADR-040 / #512): a declared working tree (the team's git-markdown
         # tree, or a team run's workspace_root the harness writes into each file-tool instance's
         # config) makes the file tools operate IN PLACE on it. None → the default per-org scratch.

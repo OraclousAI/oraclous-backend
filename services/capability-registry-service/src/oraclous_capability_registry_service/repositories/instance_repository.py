@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from oraclous_capability_registry_service.core.rls import build_rls_engine, org_scope
+from oraclous_capability_registry_service.domain.errors import ConfigurationConflictError
 from oraclous_capability_registry_service.models.enums import InstanceStatus
 from oraclous_capability_registry_service.models.tool_instance import ToolInstance
 
@@ -140,6 +141,50 @@ class InstanceRepository:
                         row.total_credits_consumed or 0
                     ) + credits_consumed
                     row.status = status
+                await session.refresh(row)
+                return row
+
+    async def set_configuration(
+        self,
+        instance_id: uuid.UUID,
+        organisation_id: uuid.UUID,
+        configuration: dict[str, Any],
+        *,
+        expected: dict[str, Any] | None = None,
+    ) -> ToolInstance | None:
+        """Replace the instance's stored configuration (#1130).
+
+        Org-scoped like every other write here: the org-GUC is bound for RLS and the predicate is
+        repeated in the WHERE clause, so an instance belonging to another org is simply not found.
+
+        ``expected`` is a compare-and-set precondition: the configuration document the caller read
+        and built this replace on. The row is locked ``FOR UPDATE`` and compared under that lock,
+        so a second writer that slipped in between the caller's read and this write is DETECTED
+        rather than silently overwritten — every run of a seeded app shares this one row, and a
+        blind replace would resurrect whatever the stale read happened to contain. A mismatch
+        writes nothing and raises (fail-closed, §3.5); the transaction rolls back around it.
+        ``None`` means the caller read nothing to compare against, so the write is unconditional —
+        the unchanged behaviour for a first write.
+        """
+        with org_scope(organisation_id):
+            async with self._session() as session:
+                async with session.begin():
+                    result = await session.execute(
+                        select(ToolInstance)
+                        .where(
+                            ToolInstance.id == instance_id,
+                            ToolInstance.organisation_id == organisation_id,
+                        )
+                        .with_for_update()
+                    )
+                    row = result.scalars().first()
+                    if row is None:
+                        return None
+                    if expected is not None and (row.configuration or {}) != expected:
+                        raise ConfigurationConflictError(
+                            "the instance configuration changed since it was read"
+                        )
+                    row.configuration = configuration
                 await session.refresh(row)
                 return row
 

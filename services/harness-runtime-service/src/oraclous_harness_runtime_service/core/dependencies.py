@@ -105,6 +105,9 @@ async def get_registry_client(
     client = RegistryClient(
         settings.capability_registry_url,
         headers=build_downstream_headers(principal, settings),
+        # #1130: the run-identity writes sit on the registry's internal plane, which is gated on
+        # the shared key in every auth mode (dev included, where the headers above are a bearer).
+        internal_key=settings.internal_service_key or "",
     )
     try:
         yield client

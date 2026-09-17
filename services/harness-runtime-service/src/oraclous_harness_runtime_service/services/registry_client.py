@@ -135,12 +135,26 @@ class RegistryClient:
         base_url: str,
         *,
         headers: dict[str, str],
+        internal_key: str = "",
         timeout: float = 30.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        # #1130: the registry's ``/internal/v1`` plane is gated on the shared key, and the harness
+        # reaches it in EVERY auth mode — ``build_downstream_headers`` only carries the key in
+        # gateway/jwt mode, where the caller's identity is header-asserted, so dev mode (a bearer)
+        # would otherwise 401 on the internal plane. Mirrors ``BrokerClient``, which has always
+        # taken the key explicitly rather than inferring it from the auth mode. A caller-supplied
+        # header still wins, so nothing already sending its own key changes.
+        key_header = {"X-Internal-Key": internal_key} if internal_key else {}
+        # #1130 compare-and-set: the configuration document this client last SAW for an instance,
+        # keyed by instance id and filled by ``list_instances``. ``update_configuration`` sends it
+        # as the precondition for its replace, so a write built on a read another writer has since
+        # superseded is refused instead of silently resurrecting the stale document. Scoped to one
+        # client, which the runtime builds per request — exactly the read-modify-write window.
+        self._seen_configuration: dict[str, dict[str, Any]] = {}
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
-            headers={"Content-Type": "application/json", **headers},
+            headers={"Content-Type": "application/json", **key_header, **headers},
             timeout=timeout,
             transport=transport,
         )
@@ -188,7 +202,14 @@ class RegistryClient:
     async def list_instances(self) -> list[dict[str, Any]]:
         """List the caller-org's tool instances (used to find-or-reuse a harness's instances)."""
         body = await self._json(await self._client.get("/api/v1/instances"))
-        return body.get("instances") or []
+        rows: list[dict[str, Any]] = body.get("instances") or []
+        for row in rows:
+            instance_id = row.get("id")
+            if instance_id is not None:
+                # #1130: remember what each configuration looked like at this read, so a replace
+                # built on it can name the read it was built on (see ``_seen_configuration``).
+                self._seen_configuration[str(instance_id)] = dict(row.get("configuration") or {})
+        return rows
 
     async def resolve_capability(
         self, ref: str, *, explicit_id: str | None = None
@@ -232,10 +253,65 @@ class RegistryClient:
         )
         return await self._json(resp)
 
-    async def execute(self, instance_id: uuid.UUID, input_data: dict[str, Any]) -> dict[str, Any]:
-        path = f"/api/v1/instances/{instance_id}/execute"
+    async def update_configuration(
+        self, instance_id: uuid.UUID, configuration: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Replace the instance's stored configuration (#1130).
+
+        Keeps the registry's stored row coherent with the run that is currently set up on a reused
+        instance. It is NOT what a dispatch trusts — ``execute`` carries this run's identity with
+        the call itself — so a row another run has since rebound cannot misfile this run's output.
+
+        On the ``/internal/v1`` plane (X-Internal-Key), never the member-facing ``/api/v1`` one:
+        the document replaced here carries the producer identity, and the gateway never routes
+        ``/internal``, so no human caller can reach it to forge one. A full replace: the caller
+        merges onto what it read, exactly as ``configure_credentials`` requires for mappings.
+
+        Conditional on that read: the document ``list_instances`` last returned for this instance
+        rides along as the compare-and-set precondition, so a replace whose base another writer
+        has already superseded comes back ``409 configuration_conflict`` (fail-closed) instead of
+        clobbering it. No prior read → nothing to compare → an unconditional write.
+        """
+        body: dict[str, Any] = {"configuration": configuration}
+        expected = self._seen_configuration.get(str(instance_id))
+        if expected is not None:
+            body["expected_configuration"] = expected
+        resp = await self._client.put(
+            f"/internal/v1/instances/{instance_id}/configuration", json=body
+        )
+        result = await self._json(resp)
+        # the write landed, so this is now the document a further replace would be built on
+        self._seen_configuration[str(instance_id)] = dict(configuration)
+        return result
+
+    async def execute(
+        self,
+        instance_id: uuid.UUID,
+        input_data: dict[str, Any],
+        *,
+        run_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Dispatch one operation on a registry instance.
+
+        ``run_context`` (#1130) is THIS RUN's own identity — producer / graph / working tree — and
+        it travels WITH the call, so the registry uses it instead of the instance's stored
+        configuration. That row is shared by every run of the same seeded app and is re-read on
+        every dispatch, so a second run starting mid-flight used to silently take the first run's
+        artifacts with it.
+
+        Stating an identity is a privileged act, so a call that states one goes over the internal
+        plane (X-Internal-Key; the gateway never edge-routes ``/internal``) — no human caller can
+        reach it to claim to be someone else's run. A dispatch that states nothing asserts nothing
+        and keeps the ordinary member-facing path, unchanged.
+        """
+        body: dict[str, Any] = {"input_data": input_data}
+        if run_context:
+            path = f"/internal/v1/instances/{instance_id}/execute"
+            body["run_context"] = run_context
+        else:
+            path = f"/api/v1/instances/{instance_id}/execute"
         try:
-            resp = await self._client.post(path, json={"input_data": input_data})
+            resp = await self._client.post(path, json=body)
         except httpx.TransportError as exc:
             # #1111: a timeout or a reset connection used to escape as a raw httpx exception. It is
             # transient, and only the exception class crosses — never its text. Whether the call

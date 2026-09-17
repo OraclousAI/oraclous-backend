@@ -30,6 +30,22 @@ class ConfigureCredentials(BaseModel):
     credential_mappings: dict[str, str]
 
 
+class UpdateConfiguration(BaseModel):
+    """Replace an instance's stored ``configuration`` wholesale.
+
+    A full replace, not a merge: the caller owns the whole document (the runtime merges the run's
+    keys onto what it read before pushing, #1130), so a key it deliberately dropped really goes.
+
+    ``expected_configuration`` is the compare-and-set precondition — the document the caller read
+    and built this replace on. Supplied, the write applies only while the stored document is still
+    that one; another writer that got in first makes it a 409 instead of a silent clobber. Omitted,
+    the write is unconditional (the caller read nothing to compare against).
+    """
+
+    configuration: dict[str, Any]
+    expected_configuration: dict[str, Any] | None = None
+
+
 class InstanceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -14,6 +14,7 @@ from oraclous_telemetry import evaluate_readiness, install_telemetry, instrument
 from oraclous_capability_registry_service.core.config import get_settings
 from oraclous_capability_registry_service.domain.errors import (
     CapabilityNotFoundError,
+    ConfigurationConflictError,
     InvalidDescriptorError,
 )
 from oraclous_capability_registry_service.repositories.capability_repository import (
@@ -25,6 +26,7 @@ from oraclous_capability_registry_service.routes.capability_routes import (
 )
 from oraclous_capability_registry_service.routes.execution_routes import router as execution_router
 from oraclous_capability_registry_service.routes.instance_routes import router as instance_router
+from oraclous_capability_registry_service.routes.internal_routes import router as internal_router
 from oraclous_capability_registry_service.routes.provenance_routes import (
     router as provenance_router,
 )
@@ -56,6 +58,10 @@ def create_app(*, lifespan=None) -> FastAPI:
     app.include_router(execution_router)
     app.include_router(binding_router)
     app.include_router(provenance_router)
+    # the service-to-service plane (X-Internal-Key; never edge-routed by the gateway) — see
+    # routes/internal_routes.py for why the run-identity writes live here and not beside the
+    # member-facing instance routes.
+    app.include_router(internal_router)
 
     @app.exception_handler(CapabilityNotFoundError)
     async def _on_not_found(_: Request, exc: CapabilityNotFoundError) -> JSONResponse:
@@ -73,6 +79,17 @@ def create_app(*, lifespan=None) -> FastAPI:
     @app.exception_handler(CapabilityConflictError)
     async def _on_conflict(_: Request, exc: CapabilityConflictError) -> JSONResponse:
         return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(exc)})
+
+    @app.exception_handler(ConfigurationConflictError)
+    async def _on_configuration_conflict(
+        _: Request, exc: ConfigurationConflictError
+    ) -> JSONResponse:
+        # #1130: the replace lost a compare-and-set against a concurrent writer. Nothing was
+        # written; the typed code is what tells the caller to re-read rather than retry blindly.
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"detail": str(exc), "error_code": "configuration_conflict"},
+        )
 
     @app.exception_handler(InstanceNotFoundError)
     async def _on_instance_not_found(_: Request, exc: InstanceNotFoundError) -> JSONResponse:
