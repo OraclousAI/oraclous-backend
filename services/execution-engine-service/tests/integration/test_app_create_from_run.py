@@ -551,3 +551,70 @@ async def test_an_app_that_predates_the_form_still_passes_its_inputs_through(wir
     await service.run(row.id, _principal(ORG_A), inputs={"task": "exactly this"}, models=_MODELS)
 
     assert recorder.calls[-1]["inputs"] == {"task": "exactly this"}
+
+
+# ── #1085: an organisation app's plan matches a platform app's shape ─────────
+
+
+def _team_with_plan_extras(
+    org: uuid.UUID, *, description: str | None, max_wall_seconds: int | None
+) -> dict[str, Any]:
+    """``_team`` plus the two fields the #1085 ruling adds, so a run built from it proves the SAME
+    ``plan`` shape a platform app returns rather than one special-cased for organisation apps."""
+    team = _team(org)
+    if description is not None:
+        team["members"][0]["description"] = description
+    if max_wall_seconds is not None:
+        team["orchestration"] = {"termination": {"max_wall_seconds": max_wall_seconds}}
+    return team
+
+
+async def test_an_organisation_apps_declared_description_and_ceiling_reach_its_plan(
+    wired: Any,
+) -> None:
+    """#1085 (CTO ruling): 'Platform and organisation apps return the identical plan; a screen
+    never branches on origin.' A member's own declared description and the team's declared wall
+    ceiling must reach an organisation app's ``plan`` on exactly the keys a platform app uses."""
+    from oraclous_execution_engine_service.core.rls import org_scope
+
+    service, runs, _ = wired
+    team = _team_with_plan_extras(
+        ORG_A, description="Gathers evidence for the brief.", max_wall_seconds=900
+    )
+    with org_scope(ORG_A):
+        row = await runs.create(
+            organisation_id=ORG_A,
+            user_id=USER_A,
+            manifest=team,
+            sub_harnesses={"scout": {"models": [{"binding": "default", "config": {}}]}},
+            gate_decisions={},
+            inputs={"task": "Write a competitor brief on Acme Cloud, focused on pricing."},
+        )
+        await runs.transition(
+            row.id, ORG_A, new_state="SUCCEEDED", allowed_from=frozenset({"QUEUED"})
+        )
+
+    detail, _ = await service.create_from_run(
+        _principal(ORG_A), team_run_id=row.id, name="Brief", description=None, fields=FIELDS
+    )
+
+    scout_step = next(s for s in detail["plan"]["steps"] if s["role"] == "scout")
+    assert scout_step["description"] == "Gathers evidence for the brief."
+    assert detail["plan"]["limits"]["max_wall_seconds"] == 900
+
+
+async def test_an_organisation_app_with_neither_declared_reads_both_as_none(wired: Any) -> None:
+    """The other half of parity: an app whose team declared neither field must not invent one —
+    the keys stay present, both read ``None``, exactly as an unfilled platform-app step would."""
+    service, runs, _ = wired
+    run = await _finished_run(runs, ORG_A)  # `_team` declares no description, no termination
+
+    detail, _ = await service.create_from_run(
+        _principal(ORG_A), team_run_id=run.id, name="Brief", description=None, fields=FIELDS
+    )
+
+    scout_step = next(s for s in detail["plan"]["steps"] if s["role"] == "scout")
+    assert "description" in scout_step
+    assert scout_step["description"] is None
+    assert "max_wall_seconds" in detail["plan"]["limits"]
+    assert detail["plan"]["limits"]["max_wall_seconds"] is None
