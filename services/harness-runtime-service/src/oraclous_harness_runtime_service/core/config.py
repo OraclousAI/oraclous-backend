@@ -106,6 +106,12 @@ class Settings(BaseSettings):
     # referenced set (defaulting to development-default) applies.
     force_policy_set: str | None = None
 
+    # #1072: cross-replica cancel (design doc). How often the in-flight watcher polls the lease's
+    # cancel flag on the owning replica, and how long POST /v1/harnesses/{id}/cancel waits for the
+    # terminal row to land before answering 202 CANCEL_REQUESTED instead of 200.
+    cancel_poll_seconds: float = 1.0
+    cancel_wait_seconds: float = 10.0
+
     @field_validator("ohm_trust_keys", "llm_base_urls", mode="before")
     @classmethod
     def _blank_or_json_dict(cls, v: object, info: object) -> object:

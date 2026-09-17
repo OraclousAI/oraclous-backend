@@ -6,6 +6,7 @@ from oraclous_harness_runtime_service.models.assignment import HarnessAssignment
 from oraclous_harness_runtime_service.models.base_model import Base
 from oraclous_harness_runtime_service.models.checkpoint import HarnessCheckpoint
 from oraclous_harness_runtime_service.models.execution import HarnessExecution
+from oraclous_harness_runtime_service.models.execution_lease import HarnessExecutionLease
 from oraclous_harness_runtime_service.models.provenance import HarnessProvenanceEvent
 
 __all__ = [
@@ -13,5 +14,6 @@ __all__ = [
     "HarnessAssignment",
     "HarnessCheckpoint",
     "HarnessExecution",
+    "HarnessExecutionLease",
     "HarnessProvenanceEvent",
 ]

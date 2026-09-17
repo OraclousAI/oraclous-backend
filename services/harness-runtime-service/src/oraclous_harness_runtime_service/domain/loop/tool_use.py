@@ -52,6 +52,7 @@ from oraclous_harness_runtime_service.domain.link_provenance import (
     strip_unverified_links,
 )
 from oraclous_harness_runtime_service.domain.llm.base import LLMClient, Message, ToolSpec
+from oraclous_harness_runtime_service.domain.loop.progress import LoopProgress
 from oraclous_harness_runtime_service.domain.policy import PolicyEnvelope
 from oraclous_harness_runtime_service.models.enums import HarnessStatus, StepKind
 
@@ -1151,6 +1152,7 @@ async def run_tool_use_loop(
     prior_served_citation_ids: Collection[str] | None = None,
     prior_fetched_urls: Collection[str] | None = None,
     person_supplied_text: str | None = None,
+    progress: LoopProgress | None = None,
 ) -> LoopResult:
     by_name = {s.name: s for s in tool_specs}
     trusted_citation_bindings = (
@@ -1218,6 +1220,11 @@ async def run_tool_use_loop(
     input_used = 0
     output_used = 0
     steps: list[LoopStep] = []
+    # #1072: alias, not copy — every `steps.append(...)` below (here and in the nested closures
+    # further down) mutates this exact list object, so `progress.steps` is up to date synchronously
+    # in the same task, with no separate sync step a cancellation could land between.
+    if progress is not None:
+        progress.steps = steps
     last_text = ""
     nudged = False  # completion contract (#543): one-time "use your tools" re-prompt — see below
     # #853: whether this member has already spent its ONE repair turn. Like `nudged`, a one-shot
@@ -1251,6 +1258,9 @@ async def run_tool_use_loop(
     # this segment into the row the pre-pause segment already wrote, so the persisted set stays
     # whole and an answer written after the pause can still cite what was served before it.
     served_citation_ids: list[str] = []
+    # #1072: alias, not copy — same reasoning as `progress.steps` above.
+    if progress is not None:
+        progress.served_citation_ids = served_citation_ids
     # #782: what a PRIOR segment of this run served, handed in by the service from the persisted
     # row. It widens what the answer-time gate checks against and NOTHING else — it is deliberately
     # not merged into `served_citation_ids`, because the repository owns the union (`update_run`)
@@ -1280,6 +1290,9 @@ async def run_tool_use_loop(
     # a member is shown after a resume never points at a different URL than it did before the pause
     # — the resumed transcript's own re-derivation is unioned in AFTER, never ahead of the seed.
     fetched_urls: list[str] = list(seed_urls)
+    # #1072: alias, not copy — same reasoning as `progress.steps` above.
+    if progress is not None:
+        progress.fetched_urls = fetched_urls
     fetched_urls_seen: set[str] = set(seed_seen)
     if resume_state is not None:
         _accumulate_fetched(
@@ -1325,6 +1338,8 @@ async def run_tool_use_loop(
     # #907: the client's own declared shape — read once, stamped on every LoopResult this run
     # produces. The loop's client never changes mid-run, so this is not a per-step concern.
     protocol_shape = getattr(llm, "protocol_shape", None)
+    if progress is not None:
+        progress.protocol_shape = protocol_shape
 
     def _over_wall_time() -> bool:
         return policy.max_wall_time_seconds is not None and (
@@ -1987,6 +2002,15 @@ async def run_tool_use_loop(
         tokens_used += resp.total_tokens
         input_used += resp.input_tokens
         output_used += resp.output_tokens
+        # #1072: book this turn's spend onto the shared progress object THE MOMENT it is known —
+        # synchronously, before any further `await` — so a cancellation landing anywhere after this
+        # line (including during this same turn's tool dispatch, or the next turn's LLM call) can
+        # never lose a turn that already completed.
+        if progress is not None:
+            progress.total_tokens = tokens_used
+            progress.prompt_tokens = input_used
+            progress.completion_tokens = output_used
+            progress.iterations = iteration
         last_text = _redact(resp.text, redactors)
         # token budget (S3 PolicyEnvelope.max_tokens, now enforceable with real usage from S4).
         if policy.max_tokens is not None and tokens_used > policy.max_tokens:

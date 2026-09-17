@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 from oraclous_governance import Principal
 from oraclous_ohm.errors import OHMError
 
@@ -21,6 +21,9 @@ from oraclous_harness_runtime_service.core.dependencies import (
     HarnessServiceDep,
     PrincipalDep,
     SpendServiceDep,
+)
+from oraclous_harness_runtime_service.repositories.execution_lease_repository import (
+    DuplicateExecutionId,
 )
 from oraclous_harness_runtime_service.schema.harness_schemas import (
     AssignmentListResponse,
@@ -34,6 +37,8 @@ from oraclous_harness_runtime_service.schema.harness_schemas import (
 )
 from oraclous_harness_runtime_service.services.assignment_service import AssignmentError
 from oraclous_harness_runtime_service.services.harness_execution_service import (
+    CancelError,
+    CancelPending,
     HarnessExecutionError,
     ResumeError,
 )
@@ -78,6 +83,10 @@ async def execute_harness(
             declared_output_keys=body.declared_output_keys,
             prior_fetched_urls=body.prior_fetched_urls,
             person_supplied_text=body.person_supplied_text,
+            # #1072: getattr, not body.execution_id — pre-#1072 duck-typed request doubles in
+            # other route tests (e.g. test_fetched_urls_route.py) predate this field and have no
+            # such attribute; ExecuteHarnessRequest's own default for a real request is also None.
+            execution_id=getattr(body, "execution_id", None),
         )
     except OHMError as exc:
         raise HTTPException(
@@ -85,7 +94,34 @@ async def execute_harness(
         ) from exc
     except HarnessExecutionError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except DuplicateExecutionId as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return HarnessExecutionOut.model_validate(row)
+
+
+@router.post("/{execution_id}/cancel")
+async def cancel_harness(
+    execution_id: uuid.UUID,
+    principal: PrincipalDep,
+    service: HarnessServiceDep,
+    response: Response,
+) -> HarnessExecutionOut | CancelPending:
+    """Request cancellation of a run (#1072 design). A terminal row already exists -> returned
+    untouched at 200 (idempotent, same body ``GET``/``execute`` return); no terminal row lands
+    before the service's wait window -> the raw :class:`CancelPending` marker at 202 (dynamic
+    status via the injected ``Response``, same technique ``community_routes.detect_communities``
+    uses for its sync/async split); an unknown id or one owned by another org -> 404, identical in
+    both cases so a wrong-org caller learns nothing about whether the id exists."""
+    organisation_id = _require_org(principal)
+    try:
+        result = await service.cancel(execution_id=execution_id, organisation_id=organisation_id)
+    except CancelError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    if isinstance(result, CancelPending):
+        response.status_code = status.HTTP_202_ACCEPTED
+        return result
+    response.status_code = status.HTTP_200_OK
+    return HarnessExecutionOut.model_validate(result)
 
 
 @router.post("/{execution_id}/resume", response_model=HarnessExecutionOut)
