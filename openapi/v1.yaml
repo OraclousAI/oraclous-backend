@@ -2429,7 +2429,8 @@ paths:
         that one wins, so an organisation's own version of a default shadows Oraclous's.
 
         Returns the SAME body as GET /v1/engine/apps/{app_id}, `plan` included — see that operation
-        for what the plan carries and what it deliberately leaves out.
+        for what the plan carries and what it deliberately leaves out, including each step's
+        `plan.steps[].description` and the `plan.limits.max_wall_seconds` ceiling.
       operationId: getAppBySlug
       x-stability: provisional
       parameters:
@@ -2454,8 +2455,10 @@ paths:
 
         `plan.steps` lists each step in RUN order, grouped by `stage` — everything sharing a stage
         runs together and the next stage waits for all of it — with what each waits on and which
-        tools it may use. `plan.limits` gives the ceilings the run cannot exceed; a null limit means
-        the team declared none, so unlimited, NOT zero. When `plan.ordered` is false the steps could
+        tools it may use. Each step's `description` (string or null) is the member's declared
+        one-sentence description of what it does, NEVER its prompt; null means the member declared
+        none. `plan.limits` gives the ceilings the run cannot exceed, `max_wall_seconds` (integer or
+        null) among them; a null limit means the team declared none, so unlimited, NOT zero. When `plan.ordered` is false the steps could
         not be sequenced at all (a cycle, or a dependency naming a member that does not exist): the
         steps are still listed with every `stage` null, and a client should warn rather than draw a
         sequence, because such a team fails as soon as someone presses Run. No member's prompt is
