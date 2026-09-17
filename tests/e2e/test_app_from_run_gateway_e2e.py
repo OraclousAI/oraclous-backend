@@ -245,6 +245,83 @@ def test_a_person_turns_their_finished_run_into_an_app_their_colleagues_can_run(
     assert stranger.get(f"/v1/engine/apps/{app['id']}/runs").status_code == 404
 
 
+def _bogus_credential(c: httpx.Client, author: dict) -> tuple[str, str]:
+    """#1109: a key the provider will actually reject, stored through the real credential API —
+    mirrors #1108's ``test_a_key_the_provider_refuses_is_named_as_such``."""
+    bogus_key = "sk-or-v1-" + uuid.uuid4().hex + uuid.uuid4().hex
+    cred = c.post(
+        "/credentials/",
+        json={
+            "tool_id": str(uuid.uuid4()),
+            "user_id": author["user_id"],
+            "name": "refused model key",
+            "provider": "openrouter",
+            "cred_type": "api_key",
+            "credential": {"api_key": bogus_key},
+        },
+    )
+    assert cred.status_code == 201, cred.text
+    return str(cred.json()["id"]), bogus_key
+
+
+def _suggested_form_collect(
+    c: httpx.Client, run_id: str, models: list[dict[str, Any]], tries: int = 8
+) -> httpx.Response:
+    """Same 202-collect protocol as ``_suggested_form``, but returns the raw response on ANY
+    settled status instead of asserting 200/202 only — needed to inspect a refusal."""
+    resp = c.post(f"/v1/engine/team-runs/{run_id}/suggested-form", json={"models": models})
+    for _ in range(tries):
+        if resp.status_code != 202:
+            return resp
+        token = resp.json()["form_draft_run_id"]
+        time.sleep(5)
+        resp = c.post(
+            f"/v1/engine/team-runs/{run_id}/suggested-form",
+            json={"form_draft_run_id": token},
+        )
+    pytest.fail(f"the drafter never settled: {resp.status_code} {resp.text}")
+
+
+@pytest.mark.byom
+@requires_byom
+def test_suggested_form_with_a_refused_model_key_is_a_credential_rejected_422(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> None:
+    """#1109: drafting the form is a real model run on the caller's OWN key (there is no platform
+    fallback to borrow) — when the provider refuses that key, the DRAFTING run's own failure
+    surfaces as 422 ``MODEL_CREDENTIAL_REJECTED`` (never the generic ``draft_failed`` 422 every
+    other failed-drafter-run gets), and neither the rejected key nor its credential id ever reach
+    the caller. Reuses this file's own way of getting a finished run — that part still spends the
+    real key, since a run cannot finish on a bad one; only the suggested-form call below uses the
+    refused key."""
+    author = register(f"formrefused{uuid.uuid4().hex[:10]} author")
+    c = gateway_client(author["token"])
+
+    model = _model(_credential(c, author))
+    doc, subs = _brief_team(author, model)
+    created = c.post(
+        "/v1/engine/team-runs",
+        json={
+            "manifest": doc,
+            "sub_harnesses": subs,
+            "gate_decisions": {},
+            "inputs": {_TASK_KEY: _REQUEST},
+        },
+    )
+    assert created.status_code == 202, created.text
+    run_id = str(created.json()["id"])
+    finished = _poll(c, run_id)
+    assert finished["state"] == "SUCCEEDED", f"the run never succeeded: {finished}"
+
+    bogus_credential_id, bogus_key = _bogus_credential(c, author)
+    resp = _suggested_form_collect(c, run_id, [_model(bogus_credential_id)])
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["code"] == "MODEL_CREDENTIAL_REJECTED", resp.text
+    assert bogus_key not in resp.text, resp.text
+    assert bogus_credential_id not in resp.text, resp.text
+
+
 def test_an_app_cannot_be_made_from_a_run_that_is_not_the_callers(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:
