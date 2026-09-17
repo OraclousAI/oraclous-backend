@@ -95,9 +95,11 @@ async def test_migration_0009_adds_fetched_urls_jsonb_not_null_default_empty_rou
     try:
         cfg = _alembic_config()
 
-        command.upgrade(cfg, "head")
+        # Pinned to the explicit revision ids (0008 -> 0009), never "head"/"-1": a later migration
+        # (e.g. 0010) landing on top must not change what this test exercises.
+        command.upgrade(cfg, "0009_fetched_urls")
         cols = _columns(postgres_dsn, "harness_executions")
-        # RED today: 0009_fetched_urls does not exist yet, so "head" stops at 0008 and this key is
+        # RED today: 0009_fetched_urls does not exist yet, so upgrading to it fails and this key is
         # simply absent.
         assert "fetched_urls" in cols, "migration 0009 has not landed — head stops at 0008"
         col = cols["fetched_urls"]
@@ -105,7 +107,7 @@ async def test_migration_0009_adds_fetched_urls_jsonb_not_null_default_empty_rou
         assert col["type"] == "jsonb"
         assert col["default"] == "'[]'::jsonb"
 
-        command.downgrade(cfg, "-1")
+        command.downgrade(cfg, "0008_served_citation_ids")
         cols_after_downgrade = _columns(postgres_dsn, "harness_executions")
         assert "fetched_urls" not in cols_after_downgrade
     finally:
