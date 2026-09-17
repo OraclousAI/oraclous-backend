@@ -71,6 +71,20 @@ _REDACTED = "[REDACTED]"
 _LLM_MAX_RETRIES = max(0, int(os.environ.get("HARNESS_LLM_MAX_RETRIES") or "4"))
 _LLM_RETRY_BASE_S = max(0.0, float(os.environ.get("HARNESS_LLM_RETRY_BASE_SECONDS") or "0.5"))
 _LLM_RETRY_MAX_S = max(0.0, float(os.environ.get("HARNESS_LLM_RETRY_MAX_SECONDS") or "8.0"))
+
+# #1111 (review round 1, M2): the tool-call retry's OWN bound and backoff. It started life reusing
+# the three constants above, which made the two untunable apart — but a flaky third-party API
+# reached through a connector and a completion against a shared BYOM key have different cost,
+# latency and failure profiles, and an operator widening one has no business widening the other.
+# The LLM values are the DEFAULTS, so an unconfigured deployment behaves exactly as before and the
+# split costs nothing until someone uses it.
+_TOOL_MAX_RETRIES = max(0, int(os.environ.get("HARNESS_TOOL_MAX_RETRIES") or _LLM_MAX_RETRIES))
+_TOOL_RETRY_BASE_S = max(
+    0.0, float(os.environ.get("HARNESS_TOOL_RETRY_BASE_SECONDS") or _LLM_RETRY_BASE_S)
+)
+_TOOL_RETRY_MAX_S = max(
+    0.0, float(os.environ.get("HARNESS_TOOL_RETRY_MAX_SECONDS") or _LLM_RETRY_MAX_S)
+)
 # indirected so a unit test can substitute a no-op sleep (deterministic, fast)
 _async_sleep = asyncio.sleep
 
@@ -200,14 +214,25 @@ class _WallTimeBudgetExhausted(Exception):
     already produce, never a generic FAILED with an exception class name for its reason."""
 
 
-def _retry_delay(attempt: int, retry_after: float | None = None) -> float:
+def _retry_delay(
+    attempt: int,
+    retry_after: float | None = None,
+    *,
+    base_s: float | None = None,
+    max_s: float | None = None,
+) -> float:
     """Exponential backoff with FULL jitter for retry ``attempt`` (0-based), capped. Honours a
     server ``Retry-After`` hint (429/503) when present — wait at least that long, but still capped
-    at ``_LLM_RETRY_MAX_S`` so a large hint cannot blow the wall-time budget (ADR-042 #551)."""
-    ceiling = min(_LLM_RETRY_MAX_S, _LLM_RETRY_BASE_S * (2**attempt))
+    at the ceiling so a large hint cannot blow the wall-time budget (ADR-042 #551).
+
+    ``base_s``/``max_s`` default to the LLM-call values, so the existing caller is unchanged; the
+    tool-call retry (#1111 M2) passes its own, independently tunable pair."""
+    base = _LLM_RETRY_BASE_S if base_s is None else base_s
+    ceiling_max = _LLM_RETRY_MAX_S if max_s is None else max_s
+    ceiling = min(ceiling_max, base * (2**attempt))
     backoff = random.uniform(0, ceiling)  # noqa: S311 — jitter, not security-sensitive
     if retry_after is not None:
-        return max(min(retry_after, _LLM_RETRY_MAX_S), backoff)
+        return max(min(retry_after, ceiling_max), backoff)
     return backoff
 
 
@@ -1674,7 +1699,8 @@ async def run_tool_use_loop(
     async def _dispatch_with_retry(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
         """#1111 decision 2: dispatch one tool call, retrying a failure that is transient AND
         SAFE TO REPEAT (``_safe_to_retry``) with the same backoff shape as a transient LLM-call
-        error, before the model sees any error. A permanent failure, one whose effect is unknown
+        error but its own tunable bound (``_TOOL_MAX_RETRIES``, #1111 M2), before the model sees
+        any error. A permanent failure, one whose effect is unknown
         for an operation that may write, an exhausted bound, or a spent wall-time budget
         re-raises — and then follows today's feed-back-to-the-model path unchanged."""
         nonlocal recovery_retries
@@ -1684,12 +1710,19 @@ async def run_tool_use_loop(
                 return await dispatch(spec, args)
             except Exception as exc:  # noqa: BLE001
                 if (
-                    attempt >= _LLM_MAX_RETRIES
+                    attempt >= _TOOL_MAX_RETRIES
                     or not _safe_to_retry(exc, spec)
                     or _over_wall_time()
                 ):
                     raise
-                await _async_sleep(_retry_delay(attempt, getattr(exc, "retry_after", None)))
+                await _async_sleep(
+                    _retry_delay(
+                        attempt,
+                        getattr(exc, "retry_after", None),
+                        base_s=_TOOL_RETRY_BASE_S,
+                        max_s=_TOOL_RETRY_MAX_S,
+                    )
+                )
                 if _over_wall_time():
                     raise
                 attempt += 1
