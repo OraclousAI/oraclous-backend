@@ -293,6 +293,49 @@ def _mapped_credential_types(descriptor: dict[str, Any]) -> list[str]:
     return out
 
 
+def _per_run_configuration(
+    *,
+    workspace_root: str | None,
+    graph_id: str | None,
+    precedence_order: list[str] | None,
+    graph_authoritative: bool,
+    producer: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """The instance-configuration keys that belong to THIS RUN, not to the instance.
+
+    Built in one place (#1130) because the two callers below — the fresh mint and the reuse of a
+    deterministically-named instance — must bind exactly the same set: a seeded app's sub-harness
+    id is stable across runs (``uuid.uuid5(app_id, role)``), so the second and every later run of
+    the same app takes the reuse path, and any key bound only on the mint path would stay frozen
+    at whatever the FIRST run wrote.
+
+    - ``working_dir`` (#518): the team run's trusted working tree, so file tools operate in place
+      (org-confined by the registry sandbox guard, #517).
+    - ``graph_id`` (#524): the run's graph, so graph tools target it — the model never invents a
+      UUID (org-scoped at create + by KGS RLS).
+    - ``precedence`` (#538, Hierarchy of Truth): the team's precedence, so the retriever ranks each
+      member's in-loop read canonical-first (#536). Bound on every instance; only the retriever
+      connector reads it. Empty order → left unbound.
+    - the producer fields (#728): WHO is writing, so an artifact records the member and run that
+      produced it. Instance configuration is the trusted channel ``graph_id`` already uses, so the
+      model can neither supply nor forge its own identity. Only the graph-ingest connector reads
+      them; every other instance carries them inertly.
+    """
+    per_run: dict[str, Any] = {}
+    if workspace_root is not None:
+        per_run["working_dir"] = workspace_root
+    if graph_id is not None:
+        per_run["graph_id"] = graph_id
+    if precedence_order:
+        per_run["precedence"] = {
+            "order": precedence_order,
+            "graph_authoritative": graph_authoritative,
+        }
+    if producer:
+        per_run.update(producer)
+    return per_run
+
+
 # Run states that count as a COMPLETED run for the post-run memory hook (#332 / ADR-027 §5) — an
 # ESCALATED pause (HITL / human assignment) is not a completed run, so no memory is written for it.
 # #587: a PARTIAL (degrade) run FINISHED with best-effort output (checkpoint=None), so it grounds
@@ -1729,13 +1772,26 @@ class HarnessExecutionService:
         the manifest's ``credential_mappings`` can satisfy it, the run binds the org's own
         configured instance of the same capability instead — the one the user set up in the
         console — and fails fast (before any model tokens) when the org has none, naming the
-        binding and the missing types. A reused org instance keeps its own configuration: the
-        per-run keys below (workspace_root/graph_id/precedence) are read only by first-party
-        keyless connectors, which always take the mint path.
+        binding and the missing types. A reused ORG instance keeps its own configuration — it is
+        the tool the user set up, not this run's — and the per-run keys are read only by
+        first-party keyless connectors, which never take that branch.
+
+        #1130 — a reused DETERMINISTIC instance is different: it is this harness's own instance,
+        and a seeded app's sub-harness id is stable across runs, so the same instance is picked up
+        on every later run. Its stored configuration is rebound to the CURRENT run's per-run keys
+        (merged over what is there, then pushed back to the registry) before anything dispatches;
+        otherwise every later run's artifacts are filed under the run that minted it first.
         """
         instance_by_binding: dict[str, uuid.UUID] = {}
         tool_specs: list[ToolSpec] = []
         seen_tools: set[str] = set()
+        per_run = _per_run_configuration(
+            workspace_root=workspace_root,
+            graph_id=graph_id,
+            precedence_order=precedence_order,
+            graph_authoritative=graph_authoritative,
+            producer=producer,
+        )
         try:
             rows = await self._registry.list_instances()
             existing = {i.get("name"): i for i in rows}
@@ -1762,6 +1818,17 @@ class HarnessExecutionService:
                     # with — carry it into the model-facing schema below (see the comment at the
                     # `tool_specs_for` call for why).
                     bound_config: dict[str, Any] = prior.get("configuration") or {}
+                    # #1130: that stored configuration was written by whichever run minted this
+                    # instance, and a seeded app's sub-harness id is the SAME on every run, so
+                    # without this the second and every later run writes its artifacts under the
+                    # first run's producer/graph/working tree. Merge — never replace — so keys the
+                    # manifest or the org authored survive; push it back, because the dispatch
+                    # reads the registry's PERSISTED row, not anything computed here. A failure
+                    # raises RegistryError out of this block, which fails the whole setup: the run
+                    # never dispatches under a stale identity.
+                    if per_run and any(bound_config.get(k) != v for k, v in per_run.items()):
+                        bound_config = {**bound_config, **per_run}
+                        await self._registry.update_configuration(instance_id, bound_config)
                 elif needed and not all(t in mappings for t in needed):
                     # #663: a fresh mint could never be configured (creation takes no credentials
                     # and nothing here could bind them) — bind the org's configured instance.
@@ -1790,30 +1857,9 @@ class HarnessExecutionService:
                     cap_config = {
                         k: v for k, v in cap.config.items() if k not in _RESERVED_CONFIG_KEYS
                     }
-                    # file-native blackboard (#518): set the team run's trusted working tree on the
-                    # instance so the member's file tools operate in place (org-confined by the
-                    # registry sandbox guard, #517). Team-run sub-harness ids are unique per import,
-                    # so the find-or-create reuse above never carries a stale workspace_root.
-                    if workspace_root is not None:
-                        cap_config["working_dir"] = workspace_root
-                    # graph substrate (#524): bind the run's graph so the graph tools target it
-                    # (the model never invents a UUID; org-scoped at create + by KGS RLS).
-                    if graph_id is not None:
-                        cap_config["graph_id"] = graph_id
-                    # Hierarchy of Truth (#538): bind the team's precedence so the retriever ranks
-                    # each member's in-loop read canonical-first (#536 ranks). Bound on every
-                    # instance; only the retriever connector reads it. Empty order → unbound.
-                    if precedence_order:
-                        cap_config["precedence"] = {
-                            "order": precedence_order,
-                            "graph_authoritative": graph_authoritative,
-                        }
-                    # #728: bind WHO is writing, so an artifact records the member and run that
-                    # produced it. Instance configuration is the trusted channel graph_id already
-                    # uses, so the model can neither supply nor forge its own identity. Only the
-                    # graph-ingest connector reads it; every other instance carries it inertly.
-                    if producer:
-                        cap_config.update(producer)
+                    # bind this run's own keys onto the new instance (see
+                    # `_per_run_configuration` for what each one is for and who reads it).
+                    cap_config.update(per_run)
                     instance = await self._registry.create_instance(
                         capability_id=str(item["id"]),
                         name=name,

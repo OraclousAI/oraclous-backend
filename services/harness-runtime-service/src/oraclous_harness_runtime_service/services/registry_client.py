@@ -232,6 +232,22 @@ class RegistryClient:
         )
         return await self._json(resp)
 
+    async def update_configuration(
+        self, instance_id: uuid.UUID, configuration: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Replace the instance's stored configuration (#1130).
+
+        The registry reads that stored row — not a tool call's arguments — on every dispatch, so
+        this is the only channel through which a run that REUSES an instance can bind its own
+        per-run identity (producer/graph_id/working_dir/precedence). A full replace: the caller
+        merges onto what it read, exactly as ``configure_credentials`` requires for mappings.
+        """
+        resp = await self._client.put(
+            f"/api/v1/instances/{instance_id}/configuration",
+            json={"configuration": configuration},
+        )
+        return await self._json(resp)
+
     async def execute(self, instance_id: uuid.UUID, input_data: dict[str, Any]) -> dict[str, Any]:
         path = f"/api/v1/instances/{instance_id}/execute"
         try:
