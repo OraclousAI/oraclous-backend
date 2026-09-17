@@ -38,6 +38,9 @@ from oraclous_execution_engine_service.domain.intake_readback import (
     idea_meets_floor,
     parse_readback,
 )
+from oraclous_execution_engine_service.domain.member_error_codes import (
+    LLM_CREDENTIAL_REJECTED,
+)
 from oraclous_execution_engine_service.domain.model_answer import first_json_object
 from oraclous_execution_engine_service.services.compiler_run_service import (
     validate_model_bindings,
@@ -51,11 +54,6 @@ from oraclous_execution_engine_service.services.team_run_service import (
 #: run of the same organisation.
 READER_TEAM_NAME = "intake-reader"
 READER_ROLE = "reader"
-
-#: The harness's curated token for a member whose model provider refused the bound key (401/403).
-#: Mirrors ``LLM_CREDENTIAL_REJECTED`` in the harness runtime's ``domain/loop/tool_use.py``; the
-#: engine cannot import it (sibling Layer-3 service), so the literal is pinned here (#1108).
-LLM_CREDENTIAL_REJECTED = "llm_credential_rejected"
 
 _TERMINAL_RUN_STATES = frozenset({"SUCCEEDED", "FAILED", "REJECTED", "COST_BUDGET"})
 
