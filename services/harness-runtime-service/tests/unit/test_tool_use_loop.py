@@ -596,6 +596,90 @@ async def test_transient_retry_respects_the_wall_time_budget(
     assert llm.calls == 1  # the wall-time budget stopped the retry after the first attempt
 
 
+# ── #1108 — a provider-refused credential gets its own error_type, never a generic class name ──
+
+
+class _FailingLLM:
+    """Raises a fixed exception on every call — used to pin ``error_type`` classification."""
+
+    protocol_shape = "fake"
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    async def complete(self, *, messages, system, tools):  # noqa: ANN001, ANN202
+        raise self._exc
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+async def test_credential_rejected_status_is_classified_as_llm_credential_rejected(
+    status_code: int,
+) -> None:
+    # ruling 2a: a provider-refused key (401/403) is a distinct, structured error_type — never the
+    # bare exception class name — so downstream (read-back, team-run surfacing) can act on it
+    # without parsing prose.
+    result = await run_tool_use_loop(
+        llm=_FailingLLM(
+            LLMClientError("LLM call → refused", status_code=status_code, transient=False)
+        ),
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=_env(),
+    )
+    assert result.status is HarnessStatus.FAILED
+    assert result.error_type == "llm_credential_rejected"
+
+
+@pytest.mark.parametrize("status_code", [400, 404, 429, 500])
+async def test_non_credential_status_keeps_the_exception_class_name(status_code: int) -> None:
+    # over-classification guard: only 401/403 are a credential rejection — a bad request, a
+    # not-found model, a rate-limit, or a provider 500 must keep today's class-name behaviour.
+    result = await run_tool_use_loop(
+        llm=_FailingLLM(
+            LLMClientError("LLM call → failed", status_code=status_code, transient=False)
+        ),
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=_env(),
+    )
+    assert result.status is HarnessStatus.FAILED
+    assert result.error_type == "LLMClientError"
+
+
+async def test_status_less_llm_client_error_keeps_the_exception_class_name() -> None:
+    # a transport failure (connection refused, timeout) carries no status_code at all — must never
+    # be misclassified as a credential rejection.
+    result = await run_tool_use_loop(
+        llm=_FailingLLM(LLMClientError("connection refused", status_code=None, transient=False)),
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=_env(),
+    )
+    assert result.status is HarnessStatus.FAILED
+    assert result.error_type == "LLMClientError"
+
+
+async def test_egress_blocked_error_is_never_classified_as_credential_rejected() -> None:
+    from oraclous_harness_runtime_service.domain.llm.egress import EgressBlockedError
+
+    result = await run_tool_use_loop(
+        llm=_FailingLLM(EgressBlockedError("blocked host")),
+        system="",
+        user_input="go",
+        tool_specs=[_SPEC],
+        dispatch=_ok_dispatch,
+        policy=_env(),
+    )
+    assert result.status is HarnessStatus.FAILED
+    assert result.error_type == "EgressBlockedError"
+
+
 # --- #641: the LLM's tool_call_id must survive into the durable step trace --------------------
 # RED until the [impl] adds ``LoopStep.tool_call_id``. Today ``tc["id"]`` is used for the
 # in-transcript tool message and then DROPPED when the LoopStep is built — so nothing durable can

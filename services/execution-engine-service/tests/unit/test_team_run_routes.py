@@ -104,6 +104,38 @@ async def test_post_team_run_422_emits_structured_detail_for_the_gateway() -> No
     assert "msg" in detail[0]  # the gateway extracts loc+type only, dropping the value-bearing msg
 
 
+async def test_post_team_run_invalid_graph_id_attributes_the_field() -> None:
+    # #1108 ruling 6: TeamRunError carries an optional `field` so an unusable graph_id points loc
+    # at ["body", "graph_id"] — not the bare "body" every other 422 falls back to — so the gateway's
+    # extract_validation_details reports details:[{"field":"graph_id","issue":"INVALID_GRAPH_ID"}]
+    # instead of a field-less one the console cannot highlight. RED until TeamRunError accepts
+    # `field` and this route's `_http` reads it.
+    class BadService:
+        async def create(self, *args: Any, **kwargs: Any) -> EngineTeamRun:
+            raise TeamRunError(
+                "graph_id does not exist in your organisation",
+                422,
+                error_type="invalid_graph_id",
+                field="graph_id",
+            )
+
+    async with await _client(BadService()) as c:
+        resp = await c.post(
+            "/v1/engine/team-runs",
+            json={
+                "manifest": {},
+                "sub_harnesses": {},
+                "gate_decisions": {},
+                "graph_id": "not-a-real-graph",
+            },
+        )
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert isinstance(detail, list) and len(detail) == 1, detail
+    assert detail[0]["loc"] == ["body", "graph_id"], detail
+    assert detail[0]["type"] == "invalid_graph_id", detail
+
+
 async def test_post_team_run_non_422_keeps_string_detail() -> None:
     # a non-422 (e.g. 403) already maps to the right canonical code — keep the plain string detail.
     class BadService:

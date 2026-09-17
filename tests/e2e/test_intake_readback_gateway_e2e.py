@@ -190,6 +190,49 @@ def test_an_unknown_collect_token_is_a_404_not_a_server_error(
     assert resp.status_code == 404, resp.text
 
 
+@requires_byom_key
+def test_a_key_the_provider_refuses_is_named_as_such(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> None:
+    """#1108: a real user pastes a key their OWN model provider will actually REFUSE (never a fake
+    key against a fake harness — the harness must be in LIVE mode, or nothing calls the provider and
+    a bad key is never distinguished from a good one). The refusal comes back as
+    ``MODEL_CREDENTIAL_REJECTED``, not a bare ``readback_failed``, and neither the rejected key nor
+    its credential id ever appears in what the caller's browser receives."""
+    user = register(f"deskbadkey{uuid.uuid4().hex[:8]} user")
+    c = gateway_client(user["token"])
+    bogus_key = "sk-or-v1-" + uuid.uuid4().hex + uuid.uuid4().hex
+
+    # the user stores a key through the real credential API — it just happens to be one their
+    # provider will refuse, exactly like a mistyped or revoked key a real founder might paste in
+    cred = c.post(
+        "/credentials/",
+        json={
+            "tool_id": str(uuid.uuid4()),
+            "user_id": user["user_id"],
+            "name": "my openrouter model",
+            "provider": "openrouter",
+            "cred_type": "api_key",
+            "credential": {"api_key": bogus_key},
+        },
+    )
+    assert cred.status_code == 201, cred.text
+    credential_id = cred.json()["id"]
+
+    resp = c.post(
+        _READBACK,
+        json={"idea": _IDEA_A, "models": _models(credential_id)},
+        timeout=30.0,
+    )
+    if resp.status_code == 202:
+        resp = _collect(c, resp.json()["readback_run_id"])
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["code"] == "MODEL_CREDENTIAL_REJECTED", resp.text
+    assert bogus_key not in resp.text, resp.text
+    assert credential_id not in resp.text, resp.text
+
+
 def test_no_connected_model_refuses_rather_than_borrowing_one(
     register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
 ) -> None:

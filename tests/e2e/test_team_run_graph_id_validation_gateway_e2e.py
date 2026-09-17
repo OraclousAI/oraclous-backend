@@ -14,6 +14,7 @@ deployed-stack e2e (fake harness mode); auto-skips when the gateway is down.
 
 from __future__ import annotations
 
+import os
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -23,6 +24,10 @@ import pytest
 from oraclous_ohm.import_.setup import import_setup
 
 pytestmark = [pytest.mark.e2e, pytest.mark.integration]
+
+#: #1108 ruling 6: the gateway attributes an unusable graph_id's 422 to the "graph_id" field
+#: specifically, not the field-less "body" every other validation 422 falls back to.
+_GRAPH_ID_DETAIL = [{"field": "graph_id", "issue": "INVALID_GRAPH_ID"}]
 
 
 def _uniq(label: str) -> str:
@@ -100,7 +105,7 @@ def test_a_cross_org_graph_id_is_rejected_fail_fast(
     assert resp.status_code == 422, (
         f"a cross-org graph_id must be rejected fail-fast: {resp.status_code} {resp.text}"
     )
-    assert "graph_id" in resp.text.lower()
+    assert resp.json()["error"]["details"] == _GRAPH_ID_DETAIL, resp.text
 
 
 def test_an_unknown_graph_id_is_rejected_fail_fast(
@@ -116,3 +121,44 @@ def test_an_unknown_graph_id_is_rejected_fail_fast(
     assert resp.status_code == 422, (
         f"an unknown graph_id must be rejected: {resp.status_code} {resp.text}"
     )
+    assert resp.json()["error"]["details"] == _GRAPH_ID_DETAIL, resp.text
+
+
+def test_an_apps_run_with_an_unknown_graph_id_is_rejected_fail_fast(
+    register: Callable[..., dict],
+    gateway_client: Callable[[str], httpx.Client],
+) -> None:
+    """The same fail-fast graph_id check, through the Oraclous-provided app's run route
+    (``POST /v1/engine/apps/{id}/runs``) rather than a raw team-run create — ``AppService.run``
+    hands ``graph_id`` straight through to the same ``TeamRunService.create`` (#1108 ruling 6).
+
+    Uses the platform-seeded ``validation-desk`` app (visible to every organisation, #932) so no
+    team manifest, model credential, or completed run is needed to get an app id — the model
+    binding below only has to pass shape validation (``validate_model_bindings``), never actually
+    call a provider, so a fabricated credential id is enough.
+    """
+    user = register(_uniq("appsgraph"))
+    c = gateway_client(user["token"])
+    apps = c.get("/v1/engine/apps").json()["apps"]
+    desk = next((a for a in apps if a.get("slug") == "validation-desk"), None)
+    assert desk is not None, f"no validation-desk app: {[a.get('name') for a in apps]}"
+
+    resp = c.post(
+        f"/v1/engine/apps/{desk['id']}/runs",
+        json={
+            "inputs": {"task": "A tool that files expense reports for contractors."},
+            "models": [
+                {
+                    "role": "primary",
+                    "binding": os.environ["E2E_MODEL"],
+                    "protocol_shape": "openai-compatible",
+                    "config": {"credential_id": str(uuid.uuid4())},
+                }
+            ],
+            "graph_id": str(uuid.uuid4()),
+        },
+    )
+    assert resp.status_code == 422, (
+        f"an unknown graph_id must be rejected: {resp.status_code} {resp.text}"
+    )
+    assert resp.json()["error"]["details"] == _GRAPH_ID_DETAIL, resp.text

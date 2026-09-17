@@ -200,6 +200,16 @@ def test_kgs_grantee_not_in_org_422_surfaces_the_machine_token() -> None:
     assert out[0].field == "grantee_user_id" and out[0].issue == "GRANTEE_NOT_IN_ORG"
 
 
+def test_engine_invalid_graph_id_422_surfaces_the_field_and_token() -> None:
+    # #1108 ruling 6: the engine's apps/{id}/runs and team-runs create routes attribute an
+    # unusable graph_id to the field (loc ["body","graph_id"]) instead of the bare "body" every
+    # other 422 falls back to, so the console can point at the graph_id input specifically.
+    raw = _raw([{"loc": ["body", "graph_id"], "type": "invalid_graph_id", "msg": "not found"}])
+    out = extract_validation_details(raw)
+    assert out is not None
+    assert out[0].field == "graph_id" and out[0].issue == "INVALID_GRAPH_ID"
+
+
 def test_mcp_import_auth_refusal_409_surfaces_the_credential_token() -> None:
     # #715 cross-service contract: the capability-registry answers an MCP server's authentication
     # refusal with a 409 carrying the needs_credential token, so the console gets

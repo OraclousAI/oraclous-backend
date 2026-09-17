@@ -55,6 +55,11 @@ EXPECTED_CODES = {
     # "semantic" label — and the screen has to send the user to credentials settings, which neither
     # VALIDATION_FAILED nor MODEL_NOT_CONNECTED (a per-REQUEST model choice) can say.
     "MODEL_CREDENTIAL_REQUIRED",
+    # #1108: the sibling refusal — a designated credential IS configured, but the provider itself
+    # rejects the key (401/403 from the LLM client). MODEL_CREDENTIAL_REQUIRED means "connect one";
+    # this means "replace the one you connected" — a founder needs to tell those apart to know
+    # which screen fixes it.
+    "MODEL_CREDENTIAL_REJECTED",
 }
 
 # A minimal valid (non-VALIDATION_FAILED) envelope inner object used as a base for

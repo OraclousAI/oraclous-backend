@@ -217,3 +217,48 @@ async def test_a_refusal_with_no_code_still_maps_to_its_status() -> None:
             "/v1/engine/intake/readback", json={"idea": _GOOD_IDEA, "models": _MODELS}
         )
     assert resp.status_code == 422
+
+
+async def test_a_provider_refused_reader_key_names_its_code_and_leaks_nothing() -> None:
+    # #1108 T5, ruling 3: run the REAL service (not the _Raises fake) against a FAILED row whose
+    # member_error_codes names the reader's credential rejection, through the real route. The
+    # gateway drains everything but an allow-listed error_code, so the body must carry exactly
+    # that code — never the key, the credential id, or the run's own error_message (sentinelled
+    # here so a future implementation that interpolates it into the message is caught).
+    from oraclous_execution_engine_service.services.intake_readback_service import (
+        IntakeReadbackService,
+    )
+
+    sentinel_key = "sk-or-v1-SENTINEL-DO-NOT-LEAK-9f2c"
+    sentinel_credential_id = "cred-SENTINEL-77ab"
+    sentinel_message = f"reader rejected credential {sentinel_credential_id} ({sentinel_key})"
+
+    class _FailedReaderRun:
+        def __init__(self) -> None:
+            self.id = uuid.uuid4()
+            self.state = "FAILED"
+            self.results = None
+            self.manifest = {"metadata": {"name": "intake-reader"}}
+            self.member_error_codes = {"reader": "llm_credential_rejected"}
+            self.error_message = sentinel_message
+
+    class _FakeTeamRuns:
+        def __init__(self, row: _FailedReaderRun) -> None:
+            self._row = row
+
+        async def get(self, run_id: uuid.UUID, principal: Principal) -> _FailedReaderRun:
+            return self._row
+
+    row = _FailedReaderRun()
+    service = IntakeReadbackService(
+        team_runs=_FakeTeamRuns(row),  # type: ignore[arg-type] — duck-typed seam
+        readback_poll_seconds=0.2,
+        readback_poll_interval_seconds=0.01,
+    )
+    async with _client(service) as c:
+        resp = await c.post("/v1/engine/intake/readback", json={"readback_run_id": str(row.id)})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"error_code": "MODEL_CREDENTIAL_REJECTED"}
+    assert sentinel_key not in resp.text
+    assert sentinel_credential_id not in resp.text
+    assert sentinel_message not in resp.text
