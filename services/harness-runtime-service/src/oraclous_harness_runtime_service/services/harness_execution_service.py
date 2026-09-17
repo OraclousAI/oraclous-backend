@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import copy
 import logging
+import re
 import uuid
 from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass
@@ -151,6 +152,42 @@ class TrustedBindings(NamedTuple):
     citation: frozenset[str]  # #743 §CITE: may mint `served_citation_ids`
     data_absence: frozenset[str]  # #580/#781: may flag `data_absent`
     web_search: frozenset[str]  # #961: bound by a run's site restriction; may flag an empty one
+
+
+#: #1111: the shape a tool execution's curated ``error_type`` may take (the registry's connectors
+#: spell them ``PROVIDER_RATE_LIMITED``, ``INVALID_INPUT``, ...). Anything else is not carried.
+_EXECUTION_ERROR_TYPE = re.compile(r"^[A-Z0-9_]{1,64}$")
+#: #1111 decision 2: the curated provider tokens the loop acts on, with whether a retry may clear
+#: them and this service's own words for each. For these the registry's ``error_message`` is not
+#: relayed — the token says everything a caller needs, and nothing upstream-authored crosses.
+_PROVIDER_ERROR_TYPES: dict[str, tuple[bool, str]] = {
+    "PROVIDER_RATE_LIMITED": (True, "the tool's provider is rate-limiting this organisation"),
+    "PROVIDER_QUOTA_EXHAUSTED": (False, "the tool's credential has no remaining quota"),
+    "PROVIDER_AUTH_FAILED": (False, "the tool's credential was rejected by its provider"),
+}
+
+
+def _tool_execution_error(execution: dict[str, Any]) -> RegistryError:
+    """The ``RegistryError`` for a tool execution that completed with a non-SUCCESS status.
+
+    Carries the registry's curated ``error_type`` as ``error_code`` and marks it ``transient`` per
+    ``_PROVIDER_ERROR_TYPES``. A failure without a recognised provider token keeps today's message,
+    which the model reads to adapt its next call.
+    """
+    raw_type = execution.get("error_type")
+    error_type = (
+        raw_type if isinstance(raw_type, str) and _EXECUTION_ERROR_TYPE.match(raw_type) else None
+    )
+    provider = _PROVIDER_ERROR_TYPES.get(error_type) if error_type is not None else None
+    if provider is not None:
+        transient, meaning = provider
+        return RegistryError(
+            f"tool execution failed ({error_type}): {meaning}",
+            error_code=error_type,
+            transient=transient,
+        )
+    detail = execution.get("error_message") or execution.get("status")
+    return RegistryError(f"tool execution failed: {detail}", error_code=error_type)
 
 
 def _trusted_bindings(
@@ -1450,8 +1487,7 @@ class HarnessExecutionService:
                 raise
             execution = await self._registry.execute(instance_id, payload)
             if execution.get("status") != "SUCCESS":
-                detail = execution.get("error_message") or execution.get("status")
-                raise RegistryError(f"tool execution failed: {detail}")
+                raise _tool_execution_error(execution)
             return execution.get("output_data") or {}
 
         trust = _trusted_bindings(manifest, resolved)

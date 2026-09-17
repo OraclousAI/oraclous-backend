@@ -51,12 +51,21 @@ class RegistryError(Exception):
 
     ``error_code`` is the registry's own typed code when it sent one — the single field allowed
     across the leak boundary, because it comes from a closed vocabulary the registry generates and
-    never from customer content.
+    never from customer content. #1111: it also carries a tool execution's curated ``error_type``
+    (e.g. ``PROVIDER_QUOTA_EXHAUSTED``) when the registry call completed but the tool failed; only
+    one of the two is ever present on a given failure.
+
+    ``transient`` marks a failure a bounded retry may recover — a rate-limited provider, or the
+    registry call itself failing in transport (5xx, timeout, reset connection). It mirrors
+    ``LLMClientError.transient``, so the loop reads both with the same check.
     """
 
-    def __init__(self, message: str, *, error_code: str | None = None) -> None:
+    def __init__(
+        self, message: str, *, error_code: str | None = None, transient: bool = False
+    ) -> None:
         super().__init__(message)
         self.error_code = error_code
+        self.transient = transient
 
 
 def _error_code(resp: httpx.Response) -> str | None:
@@ -126,7 +135,9 @@ class RegistryClient:
             if code is not None:
                 meaning = _CODE_MEANINGS.get(code)
                 message = f"{message} ({code})" + (f": {meaning}" if meaning else "")
-            raise RegistryError(message, error_code=code)
+            # #1111: a 5xx or 429 from the registry itself is a failure a retry may clear.
+            transient = resp.status_code >= 500 or resp.status_code == 429
+            raise RegistryError(message, error_code=code, transient=transient)
         return resp.json()
 
     async def list_tools(self) -> list[dict[str, Any]]:
@@ -186,7 +197,11 @@ class RegistryClient:
         return await self._json(resp)
 
     async def execute(self, instance_id: uuid.UUID, input_data: dict[str, Any]) -> dict[str, Any]:
-        resp = await self._client.post(
-            f"/api/v1/instances/{instance_id}/execute", json={"input_data": input_data}
-        )
+        path = f"/api/v1/instances/{instance_id}/execute"
+        try:
+            resp = await self._client.post(path, json={"input_data": input_data})
+        except httpx.TransportError as exc:
+            # #1111: a timeout or a reset connection used to escape as a raw httpx exception. It is
+            # transient, and only the exception class crosses — never its text.
+            raise RegistryError(f"POST {path} → {type(exc).__name__}", transient=True) from exc
         return await self._json(resp)
