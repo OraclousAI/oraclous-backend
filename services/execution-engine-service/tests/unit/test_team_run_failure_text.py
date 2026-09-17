@@ -163,6 +163,98 @@ def test_it_still_says_the_run_can_be_rerun() -> None:
     assert "re-run" in text.lower()
 
 
+# ── #1111 item 5 — the re-run statement no longer implies the WHOLE team re-runs -----------------
+#
+# `/rerun` (#1069) already re-dispatches only the failed and blocked members, seeding the succeeded
+# ones from `completed`. The old "It can be re-run." sentence never said that, and read as though a
+# re-run repeats every member. Ruled on #1111: replace it with wording that names the real scope.
+
+
+def test_the_rerun_statement_names_only_the_failed_and_blocked_members() -> None:
+    text = summarise_failed_run(
+        failed=["researcher"], blocked=["writer"], member_errors={"researcher": "no key"}
+    )
+    assert "only the failed and blocked members" in text
+    assert "It can be re-run." not in text  # the old, whole-team-implying phrase is gone
+
+
+def test_the_rerun_statement_is_also_updated_on_the_outcome_critical_branch() -> None:
+    # the SAME sentence appears on the #834 outcome-critical branch (failed/blocked both empty, an
+    # outcome_blocker present) — one wording, not two that can drift apart.
+    from oraclous_execution_engine_service.domain.outcome_blockers import OutcomeBlocker
+
+    text = summarise_failed_run(
+        failed=[],
+        blocked=[],
+        member_errors={},
+        outcome_blockers=[
+            OutcomeBlocker(
+                role="reviewer",
+                code="empty_output",
+                message="delivered nothing",
+                capability_lost="members",
+            )
+        ],
+    )
+    assert "only the failed and blocked members" in text
+    assert "It can be re-run." not in text
+
+
+# ── #1111 item 4 — a failed member's reason names its attempt count when it spent more than one --
+#
+# Decision 4 (#1111): attempts = 1 + the in-run recovery retries the member spent, captured by the
+# engine (test_member_attempt_counts.py) and handed to this function as `member_attempts`
+# (role -> int). The reason line says "after N attempts" only when N > 1 — a member that failed on
+# its very first try (N == 1, or no count recorded at all) gets today's plain reason, unchanged.
+
+
+def test_a_failed_member_reason_names_its_attempt_count_when_it_spent_more_than_one() -> None:
+    text = summarise_failed_run(
+        failed=["researcher"],
+        blocked=[],
+        member_errors={"researcher": "the registry was unreachable"},
+        member_attempts={"researcher": 3},
+    )
+    assert "after 3 attempts" in text
+
+
+def test_a_failed_member_reason_omits_the_attempt_count_when_it_is_exactly_one() -> None:
+    text = summarise_failed_run(
+        failed=["researcher"],
+        blocked=[],
+        member_errors={"researcher": "the registry was unreachable"},
+        member_attempts={"researcher": 1},
+    )
+    assert "attempt" not in text.lower()
+
+
+def test_a_failed_member_reason_omits_the_attempt_count_when_none_is_recorded() -> None:
+    # back-compat: a caller that never learned about member_attempts (or a role this run's
+    # dispatch never reported one for) gets exactly today's text.
+    text = summarise_failed_run(
+        failed=["researcher"],
+        blocked=[],
+        member_errors={"researcher": "the registry was unreachable"},
+    )
+    assert "attempt" not in text.lower()
+
+
+def test_only_the_named_role_s_attempt_count_is_shown() -> None:
+    # a count recorded for a DIFFERENT role never leaks onto this role's reason line.
+    text = summarise_failed_run(
+        failed=["researcher", "editor"],
+        blocked=[],
+        member_errors={
+            "researcher": "the registry was unreachable",
+            "editor": "the workspace could not be reached",
+        },
+        member_attempts={"editor": 4},
+    )
+    researcher_reason = text.split("researcher stopped because ", 1)[1].split(";", 1)[0]
+    assert "attempt" not in researcher_reason.lower()
+    assert "after 4 attempts" in text
+
+
 def test_it_still_fits_the_existing_cap() -> None:
     text = summarise_failed_run(
         failed=[f"researcher-{i}" for i in range(200)],
@@ -270,7 +362,7 @@ def test_a_class_name_is_replaced_by_something_a_person_can_read() -> None:
         failed=["researcher"], blocked=[], member_errors={"researcher": "TimeoutError"}
     )
     # not simply deleted — a member that failed with no reason recorded should say so
-    tail = text.split("It can be re-run.", 1)[-1]
+    tail = text.split("Failed: researcher.", 1)[-1]
     assert "researcher" in tail
     assert len(tail.split()) > 3
 
@@ -941,17 +1033,20 @@ async def test_new_failure_mode_message_names_member_agrees_with_outcome_blocker
 
 
 async def test_an_ordinary_failed_blocked_runs_message_is_unchanged_by_this_rule() -> None:
-    # PIN HARD: this is 40 tests' worth of existing behaviour (this file) — the impl must not
-    # drift it while teaching summarise_failed_run (or its caller) about the new failure mode.
+    # Was "PIN HARD" against the old "It can be re-run." wording. #1111 item 5 (ruled on the issue)
+    # deliberately drifts exactly that phrase: "It can be re-run." reads as though a re-run repeats
+    # the whole team, when `/rerun` (#1069) only ever re-dispatches the failed/blocked members. This
+    # is the one intentional exception to the "40 tests' worth" pin below.
     text = summarise_failed_run(
         failed=["researcher"],
         blocked=["writer"],
         member_errors={"researcher": "the registry was unreachable"},
     )
     assert text == (
-        "This run did not finish: 1 of its members failed and 1 could not start. It can be "
-        "re-run. Failed: researcher. Could not start: writer. researcher stopped because the "
-        "registry was unreachable."
+        "This run did not finish: 1 of its members failed and 1 could not start. Re-running "
+        "retries only the failed and blocked members below, not the whole team. Failed: "
+        "researcher. Could not start: writer. researcher stopped because the registry was "
+        "unreachable."
     )
 
 
