@@ -68,6 +68,10 @@ from oraclous_execution_engine_service.services.harness_client import (
     HarnessTimeout,
 )
 
+# #1108 ruling 2b: the only shape of harness ``error_type`` the engine records per member — a
+# curated snake_case token, never a raw class name or free-text message.
+_MEMBER_ERROR_TOKEN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
 
 class _Harness(Protocol):
     """The slice of ``HarnessClient`` the bridge needs (so a fake satisfies it in tests)."""
@@ -698,6 +702,8 @@ def make_harness_dispatch(
     parent_execution_id: uuid.UUID | None = None,
     on_child: Callable[[str, str], None] | None = None,
     on_cost: Callable[[int], None] | None = None,
+    # #1108: (role, curated error token) for a FAILED member whose harness reported one.
+    on_member_failure: Callable[[str, str], None] | None = None,
     # #1072: the live pooled tally (mirrors `run_team`'s own `cost_so_far`) — read ONLY to charge
     # an unconfirmed cancel's fail-closed headroom; never mutated here (on_cost still owns writes).
     cost_so_far: Callable[[], int] | None = None,
@@ -957,6 +963,13 @@ def make_harness_dispatch(
         # partial member result, NOT a failure. It must NOT raise (only a genuine FAILED does); the
         # orchestrator records it "partial" and the team is not cascade-failed by a degrade.
         if status not in ("SUCCEEDED", "PARTIAL"):  # fail-closed — surface the REAL harness error
+            error_type = result.get("error_type")
+            if (
+                on_member_failure is not None
+                and isinstance(error_type, str)
+                and _MEMBER_ERROR_TOKEN.fullmatch(error_type)
+            ):
+                on_member_failure(member.role, error_type)
             detail = result.get("error_message") or result.get("error_type")
             raise HarnessClientError(
                 f"member {member.role!r} harness did not succeed: {status}"
@@ -1050,6 +1063,7 @@ async def run_team_harness(
     parent_execution_id: uuid.UUID | None = None,
     on_child: Callable[[str, str], None] | None = None,
     on_cost: Callable[[int], None] | None = None,
+    on_member_failure: Callable[[str, str], None] | None = None,
     cost_so_far: Callable[[], int] | None = None,
     workspace_root: str | None = None,
     graph_id: str | None = None,
@@ -1105,6 +1119,7 @@ async def run_team_harness(
         parent_execution_id=parent_execution_id,
         on_child=on_child,
         on_cost=_on_cost,
+        on_member_failure=on_member_failure,
         # #1072: the same pooled tally `run_team` gets below — so an unconfirmed cancel's
         # fail-closed pool charge reads the live tally, not a stale/zero one.
         cost_so_far=pooled_cost,
@@ -1210,6 +1225,7 @@ async def run_team_hybrid(
     parent_execution_id: uuid.UUID | None = None,
     on_child: Callable[[str, str], None] | None = None,
     on_cost: Callable[[int], None] | None = None,
+    on_member_failure: Callable[[str, str], None] | None = None,
     workspace_root: str | None = None,
     graph_id: str | None = None,
     inputs: dict[str, Any] | None = None,
@@ -1248,6 +1264,7 @@ async def run_team_hybrid(
             parent_execution_id=parent_execution_id,
             on_child=on_child,
             on_cost=on_cost,
+            on_member_failure=on_member_failure,
             cost_so_far=cost_so_far,  # #585: the engine's pooled tally (incl. prior_cost on resume)
             workspace_root=workspace_root,
             graph_id=graph_id,
@@ -1283,6 +1300,7 @@ async def run_team_hybrid(
         parent_execution_id=parent_execution_id,
         on_child=on_child,
         on_cost=on_cost,
+        on_member_failure=on_member_failure,
         # #1072: the same pooled tally threaded to `run_team`/`run_loop_seam` below (this param
         # already existed on this function) — so an unconfirmed cancel's pool charge stays live.
         cost_so_far=cost_so_far,
