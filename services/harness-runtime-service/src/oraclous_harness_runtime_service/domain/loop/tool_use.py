@@ -1633,9 +1633,17 @@ async def run_tool_use_loop(
                 and policy.requires_valid_json
                 and not json_repair_used
                 and spec.operation == _JSON_REPAIR_OPERATION
-                and str(tc["args"].get("source_type", "")).strip().lower()
-                == _JSON_REPAIR_SOURCE_TYPE
+                and (
+                    # #1006: a non-object `args` enters too, fail-closed — its `source_type` cannot
+                    # be read, so it is refused below rather than guessed to be prose.
+                    not isinstance(tc["args"], dict)
+                    or str(tc["args"].get("source_type", "")).strip().lower()
+                    == _JSON_REPAIR_SOURCE_TYPE
+                )
             ):
+                if not isinstance(tc["args"], dict):
+                    _refuse_non_object_args(tc, spec)
+                    continue  # never dispatched; the one-shot repair grant is not spent on it
                 document = tc["args"].get("content")
                 parse_error: str | None = None
                 if isinstance(document, str):  # a non-str content is already structured
