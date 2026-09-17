@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import copy
 import logging
+import re
 import uuid
 from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass
@@ -151,6 +152,72 @@ class TrustedBindings(NamedTuple):
     citation: frozenset[str]  # #743 §CITE: may mint `served_citation_ids`
     data_absence: frozenset[str]  # #580/#781: may flag `data_absent`
     web_search: frozenset[str]  # #961: bound by a run's site restriction; may flag an empty one
+
+
+#: #1111: the shape a tool execution's curated ``error_type`` may take (the registry's connectors
+#: spell them ``PROVIDER_RATE_LIMITED``, ``INVALID_INPUT``, ...). Anything else is not carried.
+_EXECUTION_ERROR_TYPE = re.compile(r"^[A-Z0-9_]{1,64}$")
+
+
+class _ProviderError(NamedTuple):
+    """How one curated provider token is classified, plus this service's own words for it.
+
+    ``effect_unknown`` (#1111 review round 1, B1) says whether the failing call MAY ALREADY have
+    taken effect at the provider — see ``RegistryError``. It is separate from ``transient``: a
+    refusal is transient AND provably inert, while a lost answer is transient and ambiguous.
+    """
+
+    transient: bool
+    effect_unknown: bool
+    meaning: str
+
+
+#: #1111 decision 2: the curated provider tokens the loop acts on, with whether a retry may clear
+#: them and this service's own words for each. For these the registry's ``error_message`` is not
+#: relayed — the token says everything a caller needs, and nothing upstream-authored crosses.
+_PROVIDER_ERROR_TYPES: dict[str, _ProviderError] = {
+    # The provider refused the call outright, before doing any of the work it asks for.
+    "PROVIDER_RATE_LIMITED": _ProviderError(
+        True, False, "the tool's provider is rate-limiting this organisation"
+    ),
+    # #1111 review round 1, M1. The connector's own outbound call to the third party failed in
+    # transport — ``search_providers`` raises it from any ``httpx.HTTPError``. Transient, because a
+    # network failure reaching a provider is the most retry-worthy thing in this table and the
+    # alternative (no classification at all) drops it back onto the raw-prose path this issue
+    # exists to close. Ambiguous, because the token is emitted from BOTH halves of the exchange:
+    # a connection that never opened carries it, and so does a read timeout after the provider
+    # already acted. So a retrieval retries it and an operation that may write does not.
+    "PROVIDER_UNREACHABLE": _ProviderError(True, True, "the tool's provider could not be reached"),
+    "PROVIDER_QUOTA_EXHAUSTED": _ProviderError(
+        False, False, "the tool's credential has no remaining quota"
+    ),
+    "PROVIDER_AUTH_FAILED": _ProviderError(
+        False, False, "the tool's credential was rejected by its provider"
+    ),
+}
+
+
+def _tool_execution_error(execution: dict[str, Any]) -> RegistryError:
+    """The ``RegistryError`` for a tool execution that completed with a non-SUCCESS status.
+
+    Carries the registry's curated ``error_type`` as ``error_code`` and marks it ``transient`` per
+    ``_PROVIDER_ERROR_TYPES``. A failure without a recognised provider token keeps today's message,
+    which the model reads to adapt its next call.
+    """
+    raw_type = execution.get("error_type")
+    error_type = (
+        raw_type if isinstance(raw_type, str) and _EXECUTION_ERROR_TYPE.match(raw_type) else None
+    )
+    provider = _PROVIDER_ERROR_TYPES.get(error_type) if error_type is not None else None
+    if provider is not None:
+        return RegistryError(
+            f"tool execution failed ({error_type}): {provider.meaning}",
+            error_code=error_type,
+            transient=provider.transient,
+            effect_unknown=provider.effect_unknown,
+        )
+    detail = execution.get("error_message") or execution.get("status")
+    return RegistryError(f"tool execution failed: {detail}", error_code=error_type)
 
 
 def _trusted_bindings(
@@ -351,6 +418,8 @@ def _cursor(
     member_answer_from_tool: str | None = None,
     json_repair_used: bool = False,
     json_repair_grant: int = 0,
+    output_repair_used: bool = False,
+    output_repair_grant: int = 0,
     required_sites: tuple[str, ...] = (),
     declared_output_keys: tuple[str, ...] = (),
 ) -> dict[str, Any]:
@@ -372,6 +441,13 @@ def _cursor(
         "member_answer_from_tool": member_answer_from_tool,
         "json_repair_used": json_repair_used,
         "json_repair_grant": json_repair_grant,
+        # #1111: the final-answer correction's one-shot state rides the pause the same way.
+        "output_repair_used": output_repair_used,
+        "output_repair_grant": output_repair_grant,
+        # #1111 decision 4: the recovery retries already spent, so a resumed run's `attempts` keeps
+        # counting instead of starting over at 1.
+        # (getattr: a checkpoint-shaped double built before #1111 carries no such attribute.)
+        "recovery_retries": getattr(checkpoint, "recovery_retries", 0),
         # #961: the run's restriction survives a HITL pause. Without it a paused run comes back
         # unrestricted, which is the same silent drop the whole issue exists to close — and it would
         # be reachable by any member whose search sits behind a human gate.
@@ -875,6 +951,8 @@ class HarnessExecutionService:
                     member_answer_from_tool=answer_from_tool,
                     json_repair_used=cp.json_repair_used,
                     json_repair_grant=cp.json_repair_grant,
+                    output_repair_used=cp.output_repair_used,  # #1111
+                    output_repair_grant=cp.output_repair_grant,
                     required_sites=tuple(required_sites or ()),  # #961: across the pause
                     # #993: across the pause
                     declared_output_keys=tuple(declared_output_keys or ()),
@@ -914,6 +992,9 @@ class HarnessExecutionService:
             # #975 (§CITE cite-by-reference, A3): persisted on BOTH the success path and the
             # escalate/pause path — this single `create()` call handles both statuses.
             fetched_urls=result.fetched_urls,
+            # #1111 decision 4: 1 + the recovery retries the member spent — read by the engine off
+            # the execution response. (getattr: a loop-result double built before #1111 has none.)
+            attempts=getattr(result, "attempts", 1),
         )
         await self._emit_provenance(
             result.steps,
@@ -1163,6 +1244,12 @@ class HarnessExecutionService:
             # #853: old checkpoints lack the keys → False/0 → a pre-#853 paused run is unchanged.
             json_repair_used=bool(cursor.get("json_repair_used")),
             json_repair_grant=int(cursor.get("json_repair_grant") or 0),
+            # #1111: same default-safe read — a pre-#1111 checkpoint resumes with the correction
+            # unspent.
+            output_repair_used=bool(cursor.get("output_repair_used")),
+            output_repair_grant=int(cursor.get("output_repair_grant") or 0),
+            # #1111 decision 4: a pre-#1111 checkpoint lacks the key → 0 retries carried.
+            recovery_retries=int(cursor.get("recovery_retries") or 0),
         )
         prompt = manifest.primary_prompt()
         try:
@@ -1225,6 +1312,8 @@ class HarnessExecutionService:
                     member_answer_from_tool=cursor.get("member_answer_from_tool"),
                     json_repair_used=new_cp.json_repair_used,
                     json_repair_grant=new_cp.json_repair_grant,
+                    output_repair_used=new_cp.output_repair_used,  # #1111
+                    output_repair_grant=new_cp.output_repair_grant,
                     required_sites=tuple(cursor.get("required_sites") or ()),  # #961: chained gate
                     declared_output_keys=tuple(
                         cursor.get("declared_output_keys") or ()
@@ -1257,6 +1346,8 @@ class HarnessExecutionService:
             # #975 (§CITE cite-by-reference, A3): same UNION posture — the repository owns merging
             # this segment's registry into what the pre-pause segment already recorded.
             fetched_urls=result.fetched_urls,
+            # #1111 decision 4: cumulative — the cursor carried the pre-pause recovery retries.
+            attempts=getattr(result, "attempts", 1),
         )
         await self._emit_provenance(
             result.steps,  # the new tail only
@@ -1437,8 +1528,7 @@ class HarnessExecutionService:
                 raise
             execution = await self._registry.execute(instance_id, payload)
             if execution.get("status") != "SUCCESS":
-                detail = execution.get("error_message") or execution.get("status")
-                raise RegistryError(f"tool execution failed: {detail}")
+                raise _tool_execution_error(execution)
             return execution.get("output_data") or {}
 
         trust = _trusted_bindings(manifest, resolved)

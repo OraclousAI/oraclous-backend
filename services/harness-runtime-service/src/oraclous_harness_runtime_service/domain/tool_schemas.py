@@ -374,6 +374,23 @@ def _parameters_for(
     return _json_schema(op.get("parameters"), closed=True), False, frozenset()
 
 
+#: #804 (§CITE rev6): the closed set of values a capability operation may declare for what its
+#: result IS. Read here only to reject anything outside it — an unrecognised or absent value
+#: becomes ``None`` on the spec rather than being carried through as a token nothing agreed on.
+_RESULT_KINDS = frozenset({"status", "single", "collection"})
+
+
+def _result_kind(op: Mapping[str, Any]) -> str | None:
+    """The operation's declared ``result_kind``, or ``None`` when it declares none.
+
+    ``None`` is the honest reading of an MCP-imported operation, which declares no kind at all
+    (pinned registry-side by ``test_an_mcp_import_declares_no_result_kind``). Defaulting it to
+    ``"status"`` here would be the same fail-open default the registry refuses to ship.
+    """
+    kind = op.get("result_kind")
+    return kind if isinstance(kind, str) and kind in _RESULT_KINDS else None
+
+
 #: Providers accept a function name of at most 64 characters, matching ``[A-Za-z0-9_-]``.
 _LLM_NAME_MAX = 64
 _ILLEGAL_NAME_CHARS = re.compile(r"[^A-Za-z0-9_-]+")
@@ -447,6 +464,9 @@ def tool_specs_for(
                 strict=strict,
                 nullable_keys=nullable_keys,
                 bound_repo=bound_repo,
+                # #1111 (review round 1, B1): carried so the loop can tell a retrieval from an
+                # operation that may write — the only operation-level signal that exists.
+                result_kind=_result_kind(op),
             )
         )
     return out

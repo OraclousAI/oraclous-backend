@@ -51,12 +51,45 @@ class RegistryError(Exception):
 
     ``error_code`` is the registry's own typed code when it sent one — the single field allowed
     across the leak boundary, because it comes from a closed vocabulary the registry generates and
-    never from customer content.
+    never from customer content. #1111: it also carries a tool execution's curated ``error_type``
+    (e.g. ``PROVIDER_QUOTA_EXHAUSTED``) when the registry call completed but the tool failed; only
+    one of the two is ever present on a given failure.
+
+    ``transient`` marks a failure a bounded retry may recover — a rate-limited provider, or the
+    registry call itself failing in transport (5xx, timeout, reset connection). It mirrors
+    ``LLMClientError.transient``, so the loop reads both with the same check.
+
+    ``effect_unknown`` (#1111 review round 1, B1) marks a transient failure whose call MAY ALREADY
+    HAVE TAKEN EFFECT: the request was on the wire and the answer never came back, so "it failed"
+    and "it worked and the receipt was lost" are indistinguishable from here. ``transient`` alone
+    says a retry could succeed; this says a retry could also DUPLICATE — a second row appended, a
+    second message sent. The two are separate because most transient failures are refusals that
+    provably did nothing (a 429 before dispatch), and those stay freely retryable.
     """
 
-    def __init__(self, message: str, *, error_code: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_code: str | None = None,
+        transient: bool = False,
+        effect_unknown: bool = False,
+    ) -> None:
         super().__init__(message)
         self.error_code = error_code
+        self.transient = transient
+        self.effect_unknown = effect_unknown
+
+
+#: #1111 (review round 1, B1): the transport failures that PROVE the request never reached the
+#: registry — no connection was ever established (``ConnectError``/``ConnectTimeout``) or none was
+#: ever taken from the pool (``PoolTimeout``), so not a byte of the call was sent and nothing
+#: downstream can have run. Every OTHER transport failure is ambiguous by construction: a read
+#: timeout, a reset mid-call or a protocol error all happen AFTER the request went out, and the
+#: connector on the far side may have completed its provider call before the answer was lost.
+#: Deliberately a small allow-list rather than a deny-list of the ambiguous ones: a transport
+#: exception class this code has never seen must land on the ambiguous side, not the safe one.
+_NEVER_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 
 
 def _error_code(resp: httpx.Response) -> str | None:
@@ -115,7 +148,14 @@ class RegistryClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def _json(self, resp: httpx.Response) -> dict[str, Any]:
+    async def _json(self, resp: httpx.Response, *, dispatched: bool = False) -> dict[str, Any]:
+        """The response body, or a ``RegistryError`` classified from its status.
+
+        ``dispatched`` marks a request that can cause an effect OUTSIDE the registry (only
+        ``execute``). On such a request a 5xx is ambiguous — the connector's own outbound call may
+        have completed before the registry's handler failed, so the answer, not the work, is what
+        was lost. A 429 stays unambiguous either way: it is a refusal taken before any work.
+        """
         if resp.status_code // 100 != 2:
             # leak-safe: surface the method/path + coarse status, never the upstream body (it may
             # echo customer input/output) — CLAUDE.md §11 / the ADR-042 leak class. #692: the
@@ -126,7 +166,14 @@ class RegistryClient:
             if code is not None:
                 meaning = _CODE_MEANINGS.get(code)
                 message = f"{message} ({code})" + (f": {meaning}" if meaning else "")
-            raise RegistryError(message, error_code=code)
+            # #1111: a 5xx or 429 from the registry itself is a failure a retry may clear.
+            transient = resp.status_code >= 500 or resp.status_code == 429
+            raise RegistryError(
+                message,
+                error_code=code,
+                transient=transient,
+                effect_unknown=dispatched and resp.status_code >= 500,
+            )
         return resp.json()
 
     async def list_tools(self) -> list[dict[str, Any]]:
@@ -186,7 +233,17 @@ class RegistryClient:
         return await self._json(resp)
 
     async def execute(self, instance_id: uuid.UUID, input_data: dict[str, Any]) -> dict[str, Any]:
-        resp = await self._client.post(
-            f"/api/v1/instances/{instance_id}/execute", json={"input_data": input_data}
-        )
-        return await self._json(resp)
+        path = f"/api/v1/instances/{instance_id}/execute"
+        try:
+            resp = await self._client.post(path, json={"input_data": input_data})
+        except httpx.TransportError as exc:
+            # #1111: a timeout or a reset connection used to escape as a raw httpx exception. It is
+            # transient, and only the exception class crosses — never its text. Whether the call
+            # may ALREADY have run is the caller's whole retry decision, so it is classified here,
+            # where the exception type still says which half of the exchange failed.
+            raise RegistryError(
+                f"POST {path} → {type(exc).__name__}",
+                transient=True,
+                effect_unknown=not isinstance(exc, _NEVER_SENT),
+            ) from exc
+        return await self._json(resp, dispatched=True)

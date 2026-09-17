@@ -59,6 +59,12 @@ class HarnessExecution(BaseModel):
     fetched_urls: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
     )
+    # #1111 decision 4: 1 + the in-run recovery retries the member spent (final-answer correction
+    # turns, transient model and tool retries), cumulative across a HITL resume. The engine reads it
+    # off the execution response. Defaulted to 1 — a pre-#1111 run made exactly one attempt.
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
     # ── run-tree correlation (ADR-037 Decision 3 / #471; additive, nullable) ──────────────────
     # trace_id groups every execution in ONE logical run-tree; the root execution mints it to its
     # own id (mint-if-absent). parent_execution_id is the dispatching member's run (NULL at root).

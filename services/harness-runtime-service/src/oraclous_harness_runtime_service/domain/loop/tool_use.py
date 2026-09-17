@@ -71,6 +71,20 @@ _REDACTED = "[REDACTED]"
 _LLM_MAX_RETRIES = max(0, int(os.environ.get("HARNESS_LLM_MAX_RETRIES") or "4"))
 _LLM_RETRY_BASE_S = max(0.0, float(os.environ.get("HARNESS_LLM_RETRY_BASE_SECONDS") or "0.5"))
 _LLM_RETRY_MAX_S = max(0.0, float(os.environ.get("HARNESS_LLM_RETRY_MAX_SECONDS") or "8.0"))
+
+# #1111 (review round 1, M2): the tool-call retry's OWN bound and backoff. It started life reusing
+# the three constants above, which made the two untunable apart — but a flaky third-party API
+# reached through a connector and a completion against a shared BYOM key have different cost,
+# latency and failure profiles, and an operator widening one has no business widening the other.
+# The LLM values are the DEFAULTS, so an unconfigured deployment behaves exactly as before and the
+# split costs nothing until someone uses it.
+_TOOL_MAX_RETRIES = max(0, int(os.environ.get("HARNESS_TOOL_MAX_RETRIES") or _LLM_MAX_RETRIES))
+_TOOL_RETRY_BASE_S = max(
+    0.0, float(os.environ.get("HARNESS_TOOL_RETRY_BASE_SECONDS") or _LLM_RETRY_BASE_S)
+)
+_TOOL_RETRY_MAX_S = max(
+    0.0, float(os.environ.get("HARNESS_TOOL_RETRY_MAX_SECONDS") or _LLM_RETRY_MAX_S)
+)
 # indirected so a unit test can substitute a no-op sleep (deterministic, fast)
 _async_sleep = asyncio.sleep
 
@@ -104,9 +118,92 @@ def _llm_error_type(exc: BaseException) -> str:
     return type(exc).__name__
 
 
+#: #1111 decision 3: the member ``error_type`` for a tool whose provider refused its credential for
+#: good — a spent quota, or a rejected key. Keyed by the registry's curated token, which the
+#: dispatch carries on the raised error's ``error_code`` (read by attribute: the domain layer never
+#: imports the registry client). A retry cannot clear either, and feeding the error back only lets
+#: the model call the same refused tool again, so the member fails on the first refused call.
+TOOL_QUOTA_EXHAUSTED = "tool_quota_exhausted"
+TOOL_CREDENTIAL_REJECTED = "tool_credential_rejected"
+_TOOL_REFUSALS: dict[str, tuple[str, str]] = {
+    "PROVIDER_QUOTA_EXHAUSTED": (
+        TOOL_QUOTA_EXHAUSTED,
+        "the credential connected to the tool {tool} has no remaining quota",
+    ),
+    "PROVIDER_AUTH_FAILED": (
+        TOOL_CREDENTIAL_REJECTED,
+        "the credential connected to the tool {tool} was rejected by its provider",
+    ),
+}
+
+
+def _tool_refusal(exc: BaseException, tool: str) -> tuple[str, str] | None:
+    """``(error_type, error_message)`` for a curated, non-transient tool refusal, else ``None``.
+
+    The message is built from this module's own words and the tool's ``binding.operation`` name
+    only — never from the exception text, which may carry provider or customer content."""
+    if _is_transient(exc):
+        return None
+    code = getattr(exc, "error_code", None)
+    refusal = _TOOL_REFUSALS.get(code) if isinstance(code, str) else None
+    if refusal is None:
+        return None
+    error_type, template = refusal
+    return error_type, template.format(tool=tool)
+
+
 def _is_transient(exc: BaseException) -> bool:
     """An LLM-call error a bounded retry may recover (the client marks it ``transient``)."""
     return bool(getattr(exc, "transient", False))
+
+
+#: #1111 (review round 1, B1): the ``result_kind`` values that prove an operation only READS.
+#: §CITE rev6 (#804) defines these two as "the result names content that exists independently of
+#: the call" — a retrieval, whose warrant is a source the call did not create. Every mutating
+#: operation in the catalogue declares ``status`` instead (``write``, ``edit``, ``bash``, ``send``,
+#: ``deliver``, ``run``, ``ingest``), because what a write returns is a receipt of the action.
+#:
+#: ``status`` is deliberately NOT read as the other side of that split: it also covers harmless
+#: listings and pure computations, so it conflates "this changed nothing" with "this changed
+#: something and told you so", and only one of those may be re-dispatched. There is no dedicated
+#: side-effect / idempotency marker anywhere on the descriptor, the OHM binding or the registry's
+#: execute contract to read instead (searched; none exists), so this is the whole of the available
+#: signal — and everything it does not positively clear stays unretryable.
+_READ_ONLY_RESULT_KINDS = frozenset({"single", "collection"})
+
+
+def _effect_unknown(exc: BaseException) -> bool:
+    """Whether a failed dispatch MAY ALREADY have taken effect at the provider.
+
+    Defaults to ``True`` for an exception that does not say. Only a dispatch layer that marked the
+    failure ``transient`` can reach a retry at all, and every such layer here sets this field
+    explicitly; anything else claiming transience without classifying its effect is exactly the
+    case that must not be re-dispatched.
+    """
+    return bool(getattr(exc, "effect_unknown", True))
+
+
+def _safe_to_retry(exc: BaseException, spec: ToolSpec) -> bool:
+    """#1111 (review round 1, B1): whether this failed tool call may be dispatched AGAIN.
+
+    ``transient`` alone is not enough. It says a retry *could* succeed; it does not say the first
+    call did nothing. A write-capable connector whose answer was lost after the provider already
+    acted is transient and duplicating — a second row appended, a second message sent, with
+    nothing in the transcript to show it happened. So a retry needs one of two proofs:
+
+    * the failure provably took no effect (a refusal before dispatch: a 429, a connection that was
+      never established, a provider that rate-limited the call outright), or
+    * the operation itself cannot take an effect — it only reads (``_READ_ONLY_RESULT_KINDS``).
+
+    With neither, the call is not retried and falls through to today's feed-back-to-the-model path,
+    where the member sees the failure once and decides for itself. Duplicating a customer's write
+    is worse than surfacing a transient error.
+    """
+    if not _is_transient(exc):
+        return False
+    if not _effect_unknown(exc):
+        return True
+    return spec.result_kind in _READ_ONLY_RESULT_KINDS
 
 
 class _WallTimeBudgetExhausted(Exception):
@@ -117,14 +214,25 @@ class _WallTimeBudgetExhausted(Exception):
     already produce, never a generic FAILED with an exception class name for its reason."""
 
 
-def _retry_delay(attempt: int, retry_after: float | None = None) -> float:
+def _retry_delay(
+    attempt: int,
+    retry_after: float | None = None,
+    *,
+    base_s: float | None = None,
+    max_s: float | None = None,
+) -> float:
     """Exponential backoff with FULL jitter for retry ``attempt`` (0-based), capped. Honours a
     server ``Retry-After`` hint (429/503) when present — wait at least that long, but still capped
-    at ``_LLM_RETRY_MAX_S`` so a large hint cannot blow the wall-time budget (ADR-042 #551)."""
-    ceiling = min(_LLM_RETRY_MAX_S, _LLM_RETRY_BASE_S * (2**attempt))
+    at the ceiling so a large hint cannot blow the wall-time budget (ADR-042 #551).
+
+    ``base_s``/``max_s`` default to the LLM-call values, so the existing caller is unchanged; the
+    tool-call retry (#1111 M2) passes its own, independently tunable pair."""
+    base = _LLM_RETRY_BASE_S if base_s is None else base_s
+    ceiling_max = _LLM_RETRY_MAX_S if max_s is None else max_s
+    ceiling = min(ceiling_max, base * (2**attempt))
     backoff = random.uniform(0, ceiling)  # noqa: S311 — jitter, not security-sensitive
     if retry_after is not None:
-        return max(min(retry_after, _LLM_RETRY_MAX_S), backoff)
+        return max(min(retry_after, ceiling_max), backoff)
     return backoff
 
 
@@ -167,6 +275,14 @@ class LoopCheckpoint:
     # feature exists not to be. Defaulted so a checkpoint written before #853 resumes unchanged.
     json_repair_used: bool = False
     json_repair_grant: int = 0
+    # #1111: the final-answer correction's state, carried for the same two reasons as the #853 pair
+    # above. Defaulted so a checkpoint written before #1111 resumes unchanged.
+    output_repair_used: bool = False
+    output_repair_grant: int = 0
+    # #1111 decision 4: the in-run recovery retries already spent before the pause, so a resumed
+    # run keeps counting from there instead of reporting a fresh ``attempts``. Defaulted so a
+    # checkpoint written before this field resumes unchanged.
+    recovery_retries: int = 0
 
 
 @dataclass(slots=True)
@@ -204,6 +320,10 @@ class LoopResult:
     # the engine threads it member-to-member) reads it on every run, and None would be
     # indistinguishable from "the loop never populated it".
     fetched_urls: list[str] = field(default_factory=list)
+    # #1111 decision 4: 1 + the in-run recovery retries this member spent (final-answer correction
+    # turns, transient model retries, transient tool retries), cumulative across a HITL resume.
+    # Defaults to 1 so an untouched call site reads a plain single attempt.
+    attempts: int = 1
 
 
 def _truncate(text: str, limit: int = 500) -> str:
@@ -314,6 +434,21 @@ _JSON_REPAIR_MESSAGE = (
     "Write the whole document again with that fixed, and call the tool once more. Send only the "
     "JSON document itself — no prose around it and no markdown fence. This is your one correction: "
     "a second malformed document is saved exactly as written."
+)
+
+
+# #1111 decision 1: the one bounded correction for a member's FINAL answer, whenever it declares
+# required output keys (no manifest flag). Sibling of #853's repair above, on a different call
+# shape: the member's own answer, not a tool argument. It quotes the parser's own error position
+# and names the declared keys it cannot confirm, and never echoes the answer text back.
+_OUTPUT_REPAIR_STATUS = "output_repair"
+_OUTPUT_REPAIR_PARSE = "It is not parseable JSON. The parser stopped here:\n\n{error}\n\n"
+_OUTPUT_REPAIR_MESSAGE = (
+    "Your final answer was NOT accepted, because it is not the JSON object your output "
+    "contract requires. {problem}It must carry these declared keys, and does not: {missing}. "
+    "Write the whole answer again with that fixed. Send only the JSON object itself — no prose "
+    "around it and no markdown fence. This is your one correction: a second answer that still "
+    "fails is shipped exactly as written."
 )
 
 
@@ -441,6 +576,26 @@ def _extract_answer_object(
         # actually a sibling answer object.
         start = text.find("{", end)
     return first_object if first_object is not None else {}
+
+
+def _declared_output_problem(
+    text: str, declared_keys: tuple[str, ...]
+) -> tuple[str | None, list[str]]:
+    """#1111: why a final answer fails its declared output contract, as ``(parse_error,
+    missing_keys)`` — ``(None, [])`` when it passes. The same lenient peel the unwrap guarantee uses
+    decides what the answer IS, so a correct object wrapped in prose or a fence never costs a turn.
+    When no object can be found at all, the parser's own message is returned (positions are
+    absolute in the answer) and every declared key is missing, since none can be confirmed."""
+    obj = _extract_answer_object(text, declared_keys=declared_keys)
+    if obj:
+        return None, [key for key in declared_keys if key not in obj]
+    start = text.find("{")
+    try:
+        json.JSONDecoder().raw_decode(text, max(start, 0))
+    except json.JSONDecodeError as exc:
+        return str(exc), list(declared_keys)
+    # Well-formed JSON that is not an object (a bare array or scalar): no declared key can be read.
+    return "the answer is valid JSON but not a JSON object", list(declared_keys)
 
 
 def _unwrap_declared_value(value: Any) -> Any:
@@ -1253,6 +1408,13 @@ async def run_tool_use_loop(
     # tool call AND one extra iteration, spent only on the repair, and only once. Not a standing
     # exemption: the member's cap binds again on the very next call after the granted one.
     json_repair_grant = resume_state.json_repair_grant if resume_state is not None else 0
+    # #1111 decision 1: the final-answer correction's one-shot flag and its grant — one extra
+    # iteration on top of the member's budget, the #853 ruling applied to the sibling correction, so
+    # a member that answers badly on its last allowed iteration can still write the fixed answer.
+    output_repair_used = resume_state.output_repair_used if resume_state is not None else False
+    output_repair_grant = resume_state.output_repair_grant if resume_state is not None else 0
+    # #1111 decision 4: recovery retries spent so far; `attempts` on every result is 1 + this.
+    recovery_retries = resume_state.recovery_retries if resume_state is not None else 0
     # #580: set when a retrieval reports data-absence (an empty result it flagged). A run that
     # completes after this degrades to a flagged PARTIAL (never a silent SUCCEEDED) — ADR-021.
     # Intentionally NOT carried across a HITL resume (a fresh nonlocal): an empty-retrieval-then-
@@ -1422,6 +1584,7 @@ async def run_tool_use_loop(
             served_citation_ids=list(served_citation_ids),
             fetched_urls=list(fetched_urls),
             protocol_shape=protocol_shape,
+            attempts=1 + recovery_retries,
         )
 
     def _degrade(name: str, reason: str, message: str, iterations: int) -> LoopResult:
@@ -1448,6 +1611,7 @@ async def run_tool_use_loop(
             unverified_links=list(links_blocked or unverified_links),
             fetched_urls=list(fetched_urls),
             protocol_shape=protocol_shape,
+            attempts=1 + recovery_retries,
         )
 
     def _budget_gate(name: str, reason: str, message: str, iterations: int) -> LoopResult:
@@ -1496,6 +1660,7 @@ async def run_tool_use_loop(
             served_citation_ids=list(served_citation_ids),
             fetched_urls=list(fetched_urls),
             protocol_shape=protocol_shape,
+            attempts=1 + recovery_retries,
         )
 
     def _refuse_non_object_args(tc: dict[str, Any], spec: ToolSpec) -> None:
@@ -1529,6 +1694,58 @@ async def run_tool_use_loop(
                 _truncate(content),
                 tool_call_id=tc["id"],
             )
+        )
+
+    async def _dispatch_with_retry(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
+        """#1111 decision 2: dispatch one tool call, retrying a failure that is transient AND
+        SAFE TO REPEAT (``_safe_to_retry``) with the same backoff shape as a transient LLM-call
+        error but its own tunable bound (``_TOOL_MAX_RETRIES``, #1111 M2), before the model sees
+        any error. A permanent failure, one whose effect is unknown
+        for an operation that may write, an exhausted bound, or a spent wall-time budget
+        re-raises — and then follows today's feed-back-to-the-model path unchanged."""
+        nonlocal recovery_retries
+        attempt = 0
+        while True:
+            try:
+                return await dispatch(spec, args)
+            except Exception as exc:  # noqa: BLE001
+                if (
+                    attempt >= _TOOL_MAX_RETRIES
+                    or not _safe_to_retry(exc, spec)
+                    or _over_wall_time()
+                ):
+                    raise
+                await _async_sleep(
+                    _retry_delay(
+                        attempt,
+                        getattr(exc, "retry_after", None),
+                        base_s=_TOOL_RETRY_BASE_S,
+                        max_s=_TOOL_RETRY_MAX_S,
+                    )
+                )
+                if _over_wall_time():
+                    raise
+                attempt += 1
+                recovery_retries += 1
+
+    def _tool_refused(error_type: str, error_message: str, iterations: int) -> LoopResult:
+        """#1111 decision 3: the member FAILED on a curated, non-transient tool refusal — the same
+        typed terminal as a rejected model key, settled and recorded by the caller like any other
+        FAILED result."""
+        return LoopResult(
+            status=HarnessStatus.FAILED,
+            output=_shipped(last_text) if last_text else None,
+            steps=steps,
+            iterations=iterations,
+            total_tokens=tokens_used,
+            input_tokens=input_used,
+            output_tokens=output_used,
+            error_type=error_type,
+            error_message=error_message,
+            served_citation_ids=list(served_citation_ids),
+            fetched_urls=list(fetched_urls),
+            protocol_shape=protocol_shape,
+            attempts=1 + recovery_retries,
         )
 
     async def _run_tool_calls(
@@ -1584,6 +1801,9 @@ async def run_tool_use_loop(
                     redact_patterns=[p.pattern for p in redactors],
                     json_repair_used=json_repair_used,
                     json_repair_grant=json_repair_grant,
+                    output_repair_used=output_repair_used,
+                    output_repair_grant=output_repair_grant,
+                    recovery_retries=recovery_retries,
                 )
                 return _escalate(
                     f"{spec.binding}.{spec.operation}",
@@ -1710,6 +1930,7 @@ async def run_tool_use_loop(
 
             tool_started: datetime | None = None
             tool_ended: datetime | None = None
+            refusal: tuple[str, str] | None = None
             # Hoisted above the chain (#946 review round 5, LOW-5). Two of the three branches below
             # need it, and computing it twice inside the refusal condition read as if the two calls
             # might differ. Binding it in only some branches was the real hazard: a later edit that
@@ -1794,7 +2015,7 @@ async def run_tool_use_loop(
                 tool_calls_made += 1
                 tool_started = datetime.now(UTC)
                 try:
-                    result = await dispatch(spec, tc["args"])
+                    result = await _dispatch_with_retry(spec, tc["args"])
                     # #580: a retrieval that found nothing flags `data_absent` — a RESERVED result
                     # key set ONLY by the knowledge-retriever connector on an empty result (no other
                     # tool may emit it). Strip the private flag, swap in a clear proceed-note so the
@@ -1857,6 +2078,9 @@ async def run_tool_use_loop(
                         json.dumps({"error": type(exc).__name__, "detail": str(exc)}), redactors
                     )
                     status = "error"
+                    # #1111: a curated, non-transient refusal ends the member once its step is
+                    # recorded below; every other error keeps today's feed-back path.
+                    refusal = _tool_refusal(exc, step_name)
                     # #946 T2: count it against this exact call. A DIFFERENT error resets the count
                     # — see `_record_failure`. Recorded on the redacted content, so the ledger key
                     # is the same string a resumed run reads back out of the transcript.
@@ -1949,6 +2173,8 @@ async def run_tool_use_loop(
                     ended_at=tool_ended,
                 )
             )
+            if refusal is not None:
+                return _tool_refused(*refusal, iteration)
             # #900 (ADR-053 decision 3): a successful dispatch of the member's OWN declared answer
             # tool ends the loop right here — its arguments ARE the answer, and any further calls
             # in this same turn (tool_calls[i+1:]) are never even reached. Matched on the capability
@@ -1985,6 +2211,7 @@ async def run_tool_use_loop(
         ``_WallTimeBudgetExhausted`` — not counted against the retry budget, and not classified via
         ``_is_transient`` — so it reaches the caller as the run's own wall-time exhaustion, not a
         generic transient/permanent LLM error."""
+        nonlocal recovery_retries
         attempt = 0
         while True:
             remaining = _remaining_wall_time()
@@ -2018,12 +2245,13 @@ async def run_tool_use_loop(
                 ):  # the backoff itself may cross the deadline — stop, don't retry
                     raise
                 attempt += 1
+                recovery_retries += 1
 
     # #853: a `while` rather than a `range()` because the iteration cap is no longer fixed — a
     # spent repair turn grants one extra iteration alongside the extra tool call, so a member that
     # discovers its malformed document on its last allowed iteration can still write the fixed one.
     iteration = resume_iteration
-    while iteration < policy.max_iterations + json_repair_grant:
+    while iteration < policy.max_iterations + json_repair_grant + output_repair_grant:
         iteration += 1
         if _over_wall_time():
             return _budget_gate("budget", "wall_time", "wall-time budget exhausted", iteration)
@@ -2057,6 +2285,7 @@ async def run_tool_use_loop(
                 served_citation_ids=list(served_citation_ids),
                 fetched_urls=list(fetched_urls),
                 protocol_shape=protocol_shape,
+                attempts=1 + recovery_retries,
             )
         llm_ended = datetime.now(UTC)
         tokens_used += resp.total_tokens
@@ -2213,6 +2442,37 @@ async def run_tool_use_loop(
                         _truncate(detail),
                     )
                 )
+            # #1111 decision 1: one bounded correction turn when a member that declares required
+            # output keys ends on an answer that does not parse, or parses without a declared key.
+            # Runs on the otherwise-settled answer (citation + link gates above) and before any
+            # terminal, so a degraded member is corrected too. Once spent, the answer falls through
+            # to today's path unchanged: the #697 contract check downstream still fails the member.
+            if policy.declared_output_keys and not output_repair_used:
+                parse_error, missing_keys = _declared_output_problem(
+                    last_text, policy.declared_output_keys
+                )
+                if missing_keys:
+                    output_repair_used = True
+                    output_repair_grant = 1
+                    recovery_retries += 1
+                    problem = _OUTPUT_REPAIR_PARSE.format(error=parse_error) if parse_error else ""
+                    correction = _OUTPUT_REPAIR_MESSAGE.format(
+                        problem=problem, missing=", ".join(missing_keys)
+                    )
+                    messages.append({"role": "assistant", "content": last_text})
+                    messages.append({"role": "user", "content": _redact(correction, redactors)})
+                    steps.append(
+                        LoopStep(
+                            len(steps),
+                            StepKind.GATE,
+                            "structured_output",
+                            _OUTPUT_REPAIR_STATUS,
+                            _truncate(
+                                json.dumps({"parse_error": parse_error, "missing": missing_keys})
+                            ),
+                        )
+                    )
+                    continue
             if retrieval_empty:
                 # #580: the member completed, but a retrieval reported data-absence — degrade to a
                 # flagged PARTIAL (never a silent SUCCEEDED) via #587's _degrade, so the data gap
@@ -2259,6 +2519,7 @@ async def run_tool_use_loop(
                 unverified_links=list(unverified_links),
                 fetched_urls=list(fetched_urls),
                 protocol_shape=protocol_shape,
+                attempts=1 + recovery_retries,
             )
 
         # A tool-call turn is the member moving PAST a blocked draft, so the run no longer ends on
@@ -2326,7 +2587,7 @@ async def run_tool_use_loop(
             "citation",
             "citation_unresolved",
             f"the member could not produce a citable answer within the budget ({citation_blocked})",
-            policy.max_iterations + json_repair_grant,
+            policy.max_iterations + json_repair_grant + output_repair_grant,
         )
     # #944: the member spent the budget without producing an answer whose links it actually
     # fetched. This DEGRADES — PARTIAL, typed, carrying the last draft — and deliberately does NOT
@@ -2345,7 +2606,7 @@ async def run_tool_use_loop(
             LINK_FLAG_STATUS,
             "the member could not link only pages it fetched within the budget "
             f"({_named(links_blocked or [])})",
-            policy.max_iterations + json_repair_grant,
+            policy.max_iterations + json_repair_grant + output_repair_grant,
         )
     # iteration cap reached without a final answer → escalate or degrade (#587).
     #
@@ -2367,5 +2628,5 @@ async def run_tool_use_loop(
         "budget",
         "iteration_cap",
         f"tool-use loop did not converge{repeat_note}",
-        policy.max_iterations + json_repair_grant,
+        policy.max_iterations + json_repair_grant + output_repair_grant,
     )

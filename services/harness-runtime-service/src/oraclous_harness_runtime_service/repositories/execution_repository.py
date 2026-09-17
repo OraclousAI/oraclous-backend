@@ -70,6 +70,7 @@ class ExecutionRepository:
         parent_execution_id: uuid.UUID | None = None,
         served_citation_ids: list[str] | None = None,
         fetched_urls: list[str] | None = None,
+        attempts: int = 1,
     ) -> HarnessExecution:
         row = HarnessExecution(
             id=execution_id,
@@ -98,6 +99,8 @@ class ExecutionRepository:
             # #975 (§CITE cite-by-reference): the registry cite-by-reference numbers `[Sn]` markers
             # against. Same posture — empty, never NULL.
             fetched_urls=list(fetched_urls or []),
+            # #1111 decision 4: 1 + the in-run recovery retries the member spent.
+            attempts=attempts,
         )
         # ADR-030: bind the org so the engine begin-guard sets app.current_organisation_id; the
         # FORCE'd RLS WITH CHECK admits this INSERT only when the stamped org equals the bound one.
@@ -169,6 +172,7 @@ class ExecutionRepository:
         output_tokens: int | None = None,
         served_citation_ids: list[str] | None = None,
         fetched_urls: list[str] | None = None,
+        attempts: int | None = None,
     ) -> HarnessExecution | None:
         """Full in-place update of an org-scoped run — the S6 resume path overwrites status/output/
         error/iterations/tokens and REPLACES the step trace (caller appends the new tail). Unlike
@@ -187,6 +191,9 @@ class ExecutionRepository:
         moves) and CAPPED at ``MAX_FETCHED_URLS`` (the public constant in ``domain.link_provenance``
         — never hand-derived): once the cap is reached, further new entries are simply dropped, so
         every already-numbered ``[Sn]`` marker from a prior segment keeps resolving to the same URL.
+
+        #1111: ``attempts`` REPLACES the stored count when supplied — the resumed loop's value is
+        already cumulative, because the checkpoint cursor carried the pre-pause recovery retries.
         """
         with org_scope(organisation_id):
             async with self._session() as session:
@@ -227,6 +234,8 @@ class ExecutionRepository:
                             fetched_merged.append(url)
                             fetched_seen.add(url)
                         row.fetched_urls = fetched_merged
+                    if attempts is not None:
+                        row.attempts = attempts
                     row.steps = steps
                 await session.refresh(row)
                 return row

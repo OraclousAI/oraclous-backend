@@ -632,12 +632,20 @@ def _named_members(names: list[str]) -> str:
     return ", ".join(shown)
 
 
+#: #1111 item 5: ``/rerun`` (#1069) re-dispatches only the failed and blocked members, seeding the
+#: succeeded ones — one wording for every branch below, so the two can never drift apart.
+_RERUN_SCOPE_SENTENCE = (
+    "Re-running retries only the failed and blocked members below, not the whole team."
+)
+
+
 def summarise_failed_run(
     *,
     failed: list[str],
     blocked: list[str],
     member_errors: Mapping[str, str],
     outcome_blockers: Sequence[OutcomeBlocker] = (),
+    member_attempts: Mapping[str, int] | None = None,
 ) -> str:
     """The sentence a person reads when a team run did not finish.
 
@@ -652,11 +660,16 @@ def summarise_failed_run(
     defect as #749's "Complete — nothing is silently dropped." ``outcome_blockers`` is empty on
     every call this function used to see (default ``()``, byte-identical output); a caller passes
     it only when `failed`/`blocked` might legitimately both be empty.
+
+    #1111: ``member_attempts`` (role -> attempt count) adds "after N attempts" to a failed member's
+    reason only when N > 1; a member with no recorded count, or exactly one, reads as before. The
+    re-run sentence names the real scope of ``/rerun`` (#1069): only failed and blocked members.
     """
+    attempts = member_attempts or {}
     if failed or blocked:
         parts = [
             f"This run did not finish: {len(failed)} of its members failed and "
-            f"{len(blocked)} could not start. It can be re-run."
+            f"{len(blocked)} could not start. {_RERUN_SCOPE_SENTENCE}"
         ]
     else:
         # `outcome_blockers` is guaranteed non-empty here — a "failed" run always has SOME
@@ -664,7 +677,7 @@ def summarise_failed_run(
         names = _named_members([b.role for b in outcome_blockers])
         parts = [
             f"This run did not finish: {names} did not deliver its declared output. "
-            "It can be re-run."
+            f"{_RERUN_SCOPE_SENTENCE}"
         ]
     if failed:
         parts.append(f"Failed: {_named_members(failed)}.")
@@ -677,7 +690,9 @@ def summarise_failed_run(
         recorded = member_errors.get(role)
         reason = _plain_reason(recorded) if isinstance(recorded, str) else None
         if reason:
-            reasons.append(f"{role} stopped because {reason}")
+            count = attempts.get(role)
+            tried = f" after {count} attempts" if isinstance(count, int) and count > 1 else ""
+            reasons.append(f"{role} stopped{tried} because {reason}")
     for blocker in outcome_blockers:
         if len(reasons) >= _FAILURE_SUMMARY_MAX_DETAILS:
             break
@@ -2323,6 +2338,17 @@ class TeamRunService:
         def _record_member_failure(role: str, token: str) -> None:
             member_error_codes[role] = token
 
+        # #1111 decision 4: role -> attempt count, the same carry-forward rule as the error codes
+        # above — a role this drive re-executes starts clean, so a stale count never survives.
+        member_attempt_counts: dict[str, int] = {
+            role: count
+            for role, count in (row.member_attempt_counts or {}).items()
+            if role in seeded
+        }
+
+        def _record_member_attempts(role: str, attempts: int) -> None:
+            member_attempt_counts[role] = attempts
+
         # #828 items 1+2: the live per-member status (now including the provisional "running") +
         # timings, seeded from any prior (resumed) drive. #832-style race: on_dispatch and the
         # settle checkpoint both write this row from concurrent members of a wide stage, so BOTH
@@ -2504,6 +2530,7 @@ class TeamRunService:
                 on_child=_record_child,
                 on_cost=cost_deltas.append,
                 on_member_failure=_record_member_failure,  # #1108: curated per-member token
+                on_member_attempts=_record_member_attempts,  # #1111: per-member attempt count
                 workspace_root=row.workspace_root,  # file-native (#518): the run's working tree
                 graph_id=row.graph_id,  # graph substrate (#524): the run's bound graph
                 inputs=row.inputs,  # #599: user-seeded state for a member's fan_out.over: "$.<key>"
@@ -2557,6 +2584,7 @@ class TeamRunService:
                     # over them is exactly the blanking this issue is about.
                     member_status=backfilled,
                     member_error_codes=dict(member_error_codes),  # #1108
+                    member_attempt_counts=dict(member_attempt_counts),  # #1111
                 )
             await self._accrue_schedule_cost(
                 row, org, sum(cost_deltas)
@@ -2641,6 +2669,7 @@ class TeamRunService:
                 blocked=blocked,
                 member_errors=result.member_errors,
                 outcome_blockers=outcome_blockers,
+                member_attempts=member_attempt_counts,  # #1111: "after N attempts" when N > 1
             )
         with org_scope(org):
             updated, _ = await self._team_runs.transition(
@@ -2652,6 +2681,7 @@ class TeamRunService:
                 paused_at=list(result.paused_at),
                 member_status=member_status,  # ADR-042: per-member result (drives re-run target)
                 member_error_codes=dict(member_error_codes),  # #1108: role -> curated failure token
+                member_attempt_counts=dict(member_attempt_counts),  # #1111: role -> attempts
                 error_message=failed_summary,  # None unless a member failed/blocked
                 child_execution_ids=child_ids,  # the member executions that form this run's tree
                 cost_tokens=prior_cost + sum(cost_deltas),  # O4: the run's accumulated token cost
