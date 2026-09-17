@@ -64,7 +64,13 @@ def _http(exc: TeamRunError) -> HTTPException:
     422 passthrough surfaces ``VALIDATION_FAILED`` with a field-level issue — instead of the
     misleading ``MALFORMED_REQUEST`` a free-string detail falls back to. The gateway drops the
     value-reflecting ``msg`` (leak-safe — Interface Contracts §3 rule 8), keeping only loc + type.
-    Non-422 statuses keep a plain string detail (they already map to the right canonical code)."""
+    Non-422 statuses keep a plain string detail (they already map to the right canonical code).
+
+    An error carrying an ``error_code`` (#1109) takes neither shape: it gets ``{"error_code":
+    <code>}``, mirroring ``intake_routes.py``'s ``_http`` — the only error body the gateway's
+    allow-list relays intact, so the code carries the whole meaning of the refusal on its own."""
+    if exc.error_code is not None:
+        return HTTPException(status_code=exc.status_code, detail={"error_code": exc.error_code})
     if exc.status_code == 422:
         return HTTPException(
             status_code=422,

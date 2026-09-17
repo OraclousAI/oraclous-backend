@@ -139,7 +139,12 @@ class TeamRunError(Exception):
 
     ``field`` optionally names the offending request-body field (a name, never a value) so the
     422's ``loc`` points at it and the gateway reports ``details[].field`` as that name rather
-    than the bare ``body`` (#1108)."""
+    than the bare ``body`` (#1108).
+
+    ``error_code`` optionally names a canonical, allow-listed gateway error code (#1109). When it
+    is set the route emits ``{"error_code": <code>}`` INSTEAD of the structured array above,
+    because that object is the only error body the gateway relays intact — every other field is
+    dropped at the edge, so the code has to carry the whole meaning of the refusal on its own."""
 
     def __init__(
         self,
@@ -148,11 +153,13 @@ class TeamRunError(Exception):
         *,
         error_type: str = "team_run_invalid",
         field: str | None = None,
+        error_code: str | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.error_type = error_type
         self.field = field
+        self.error_code = error_code
 
 
 class TeamRunPreflightError(TeamRunError):
