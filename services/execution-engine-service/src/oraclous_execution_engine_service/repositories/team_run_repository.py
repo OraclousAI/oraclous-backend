@@ -239,11 +239,17 @@ class TeamRunRepository:
         *,
         new_state: str,
         allowed_from: frozenset[str],
+        member_error_codes: dict[str, str] | None = None,
         **fields: Any,
     ) -> tuple[EngineTeamRun | None, bool]:
         """CAS the team run into ``new_state`` only if its current state is in ``allowed_from``,
         under a row lock; returns (row, applied). The single-driver claim — a redelivered or
-        concurrent driver that finds the run already RUNNING/terminal becomes a no-op."""
+        concurrent driver that finds the run already RUNNING/terminal becomes a no-op.
+
+        ``member_error_codes`` (#1108) is written only when not None, so a transition that does not
+        carry it never nulls the NOT NULL column."""
+        if member_error_codes is not None:
+            fields["member_error_codes"] = member_error_codes
         async with self._session() as session:
             async with session.begin():
                 result = await session.execute(
