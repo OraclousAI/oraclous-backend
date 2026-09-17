@@ -961,9 +961,11 @@ class AppInputField(BaseModel):
 class AppPlanStep(BaseModel):
     """ONE step in what an app is about to do.
 
-    Structure only — role, kind, what it waits on, which tools it may use. Deliberately no
-    ``subgoal``: a member's prompt is the plan's CONTENT rather than its shape, it is the thing a
-    shared app must not publish, and in an app someone authored it can carry their own words.
+    Structure — role, kind, what it waits on, which tools it may use — plus the one-sentence
+    ``description`` the author declared for display. Deliberately no ``subgoal``: a member's prompt
+    is the plan's CONTENT rather than its shape, it is the thing a shared app must not publish, and
+    in an app someone authored it can carry their own words. A description is text written to be
+    shown, and an organisation's app is readable only by that organisation.
     """
 
     role: str
@@ -973,10 +975,14 @@ class AppPlanStep(BaseModel):
     stage: int | None = None
     depends_on: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
+    #: The member's declared description, stripped. ``None`` when missing or blank — never derived
+    #: from ``subgoal``.
+    description: str | None = None
 
 
 class AppPlanLimits(BaseModel):
-    """The ceilings this run cannot exceed.
+    """The ceilings this run cannot exceed: total tokens, total tool calls, sub-runs, and wall-clock
+    seconds.
 
     ``None`` means the team declared no ceiling — unlimited, NOT zero. The two are opposite claims,
     and a screen rendering "0" for an undeclared budget would tell the reader the exact reverse of
@@ -986,6 +992,8 @@ class AppPlanLimits(BaseModel):
     max_tokens_total: int | None = None
     max_tool_calls_total: int | None = None
     max_sub_runs: int | None = None
+    #: The run's wall-clock ceiling, from ``orchestration.termination.max_wall_seconds``.
+    max_wall_seconds: int | None = None
 
 
 class AppPlan(BaseModel):

@@ -100,8 +100,10 @@ def plan_summary(manifest: dict[str, Any]) -> dict[str, Any]:
     graph, and needs the ceiling the run cannot exceed. Neither is available anywhere else once a
     client stops reading the team document directly.
 
-    So this is STRUCTURE ONLY: which steps run, in what order, what each waits on, which tools each
-    may use, and the run's ceilings.
+    So this is STRUCTURE, plus one line of display text per step: which steps run, in what order,
+    what each waits on, which tools each may use, the ``description`` its author declared for it,
+    and the run's ceilings (``max_tokens_total``, ``max_tool_calls_total``, ``max_sub_runs``,
+    ``max_wall_seconds``).
 
     ORDER IS THE REAL ORDER. Steps come back in execution order, grouped by ``stage`` — everything
     in one stage runs together, and the next stage waits for all of it. That order is computed by
@@ -122,6 +124,13 @@ def plan_summary(manifest: dict[str, Any]) -> dict[str, Any]:
     that holds prose today, not proof that no author text can appear. ``role`` is free text. Before
     user-authored apps become readable by other organisations, this needs to become an allowlist of
     what may be published rather than a list of what may not.
+
+    A member's ``description`` IS published, and that is not the same exposure. It is text the
+    author wrote for display — a sentence saying what the step does — not the prompt the step runs
+    on. And an organisation's app is readable only by that organisation (the read widening is to
+    the platform's apps alone), so an author's description is never shown to another tenant. It is
+    copied as declared, stripped; missing or blank reads as ``None``, and it is never filled in
+    from ``subgoal``.
 
     A missing ceiling reads as ``None``, never 0: unlimited and "zero allowed" are opposite claims,
     and a screen rendering the wrong one would mislead exactly the person this exists to inform.
@@ -146,6 +155,7 @@ def plan_summary(manifest: dict[str, Any]) -> dict[str, Any]:
             )
 
     budget = team.budget
+    termination = team.orchestration.termination if team.orchestration else None
     return {
         "steps": steps,
         "ordered": stages is not None,
@@ -153,18 +163,22 @@ def plan_summary(manifest: dict[str, Any]) -> dict[str, Any]:
             "max_tokens_total": budget.max_tokens_total if budget else None,
             "max_tool_calls_total": budget.max_tool_calls_total if budget else None,
             "max_sub_runs": budget.max_sub_runs if budget else None,
+            "max_wall_seconds": termination.max_wall_seconds if termination else None,
         },
     }
 
 
 def _step(member: OHMMember, *, stage: int | None) -> dict[str, Any]:
-    """One step, as a reader sees it. Structure only — never the member's prompt."""
+    """One step, as a reader sees it. Structure and the author's display description — never the
+    member's prompt."""
+    description = (member.description or "").strip() or None
     return {
         "role": member.role,
         "kind": member.kind,
         "stage": stage,
         "depends_on": list(member.depends_on),
         "tools": list(member.tools),
+        "description": description,
     }
 
 
