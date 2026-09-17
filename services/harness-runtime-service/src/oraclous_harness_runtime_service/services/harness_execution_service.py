@@ -351,6 +351,8 @@ def _cursor(
     member_answer_from_tool: str | None = None,
     json_repair_used: bool = False,
     json_repair_grant: int = 0,
+    output_repair_used: bool = False,
+    output_repair_grant: int = 0,
     required_sites: tuple[str, ...] = (),
     declared_output_keys: tuple[str, ...] = (),
 ) -> dict[str, Any]:
@@ -372,6 +374,9 @@ def _cursor(
         "member_answer_from_tool": member_answer_from_tool,
         "json_repair_used": json_repair_used,
         "json_repair_grant": json_repair_grant,
+        # #1111: the final-answer correction's one-shot state rides the pause the same way.
+        "output_repair_used": output_repair_used,
+        "output_repair_grant": output_repair_grant,
         # #961: the run's restriction survives a HITL pause. Without it a paused run comes back
         # unrestricted, which is the same silent drop the whole issue exists to close — and it would
         # be reachable by any member whose search sits behind a human gate.
@@ -875,6 +880,8 @@ class HarnessExecutionService:
                     member_answer_from_tool=answer_from_tool,
                     json_repair_used=cp.json_repair_used,
                     json_repair_grant=cp.json_repair_grant,
+                    output_repair_used=cp.output_repair_used,  # #1111
+                    output_repair_grant=cp.output_repair_grant,
                     required_sites=tuple(required_sites or ()),  # #961: across the pause
                     # #993: across the pause
                     declared_output_keys=tuple(declared_output_keys or ()),
@@ -1163,6 +1170,10 @@ class HarnessExecutionService:
             # #853: old checkpoints lack the keys → False/0 → a pre-#853 paused run is unchanged.
             json_repair_used=bool(cursor.get("json_repair_used")),
             json_repair_grant=int(cursor.get("json_repair_grant") or 0),
+            # #1111: same default-safe read — a pre-#1111 checkpoint resumes with the correction
+            # unspent.
+            output_repair_used=bool(cursor.get("output_repair_used")),
+            output_repair_grant=int(cursor.get("output_repair_grant") or 0),
         )
         prompt = manifest.primary_prompt()
         try:
@@ -1225,6 +1236,8 @@ class HarnessExecutionService:
                     member_answer_from_tool=cursor.get("member_answer_from_tool"),
                     json_repair_used=new_cp.json_repair_used,
                     json_repair_grant=new_cp.json_repair_grant,
+                    output_repair_used=new_cp.output_repair_used,  # #1111
+                    output_repair_grant=new_cp.output_repair_grant,
                     required_sites=tuple(cursor.get("required_sites") or ()),  # #961: chained gate
                     declared_output_keys=tuple(
                         cursor.get("declared_output_keys") or ()

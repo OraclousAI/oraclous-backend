@@ -167,6 +167,10 @@ class LoopCheckpoint:
     # feature exists not to be. Defaulted so a checkpoint written before #853 resumes unchanged.
     json_repair_used: bool = False
     json_repair_grant: int = 0
+    # #1111: the final-answer correction's state, carried for the same two reasons as the #853 pair
+    # above. Defaulted so a checkpoint written before #1111 resumes unchanged.
+    output_repair_used: bool = False
+    output_repair_grant: int = 0
 
 
 @dataclass(slots=True)
@@ -317,6 +321,21 @@ _JSON_REPAIR_MESSAGE = (
 )
 
 
+# #1111 decision 1: the one bounded correction for a member's FINAL answer, whenever it declares
+# required output keys (no manifest flag). Sibling of #853's repair above, on a different call
+# shape: the member's own answer, not a tool argument. It quotes the parser's own error position
+# and names the declared keys it cannot confirm, and never echoes the answer text back.
+_OUTPUT_REPAIR_STATUS = "output_repair"
+_OUTPUT_REPAIR_PARSE = "It is not parseable JSON. The parser stopped here:\n\n{error}\n\n"
+_OUTPUT_REPAIR_MESSAGE = (
+    "Your final answer was NOT accepted, because it is not the JSON object your output "
+    "contract requires. {problem}It must carry these declared keys, and does not: {missing}. "
+    "Write the whole answer again with that fixed. Send only the JSON object itself — no prose "
+    "around it and no markdown fence. This is your one correction: a second answer that still "
+    "fails is shipped exactly as written."
+)
+
+
 # #944: what a draft whose EVERY link was invented tells the member. Same posture as the citation
 # corrections — it names the offending URLs, because "one of your links is wrong" is not actionable,
 # and it names what the member MAY link, because a remedy it cannot perform is #692/#693 again.
@@ -441,6 +460,26 @@ def _extract_answer_object(
         # actually a sibling answer object.
         start = text.find("{", end)
     return first_object if first_object is not None else {}
+
+
+def _declared_output_problem(
+    text: str, declared_keys: tuple[str, ...]
+) -> tuple[str | None, list[str]]:
+    """#1111: why a final answer fails its declared output contract, as ``(parse_error,
+    missing_keys)`` — ``(None, [])`` when it passes. The same lenient peel the unwrap guarantee uses
+    decides what the answer IS, so a correct object wrapped in prose or a fence never costs a turn.
+    When no object can be found at all, the parser's own message is returned (positions are
+    absolute in the answer) and every declared key is missing, since none can be confirmed."""
+    obj = _extract_answer_object(text, declared_keys=declared_keys)
+    if obj:
+        return None, [key for key in declared_keys if key not in obj]
+    start = text.find("{")
+    try:
+        json.JSONDecoder().raw_decode(text, max(start, 0))
+    except json.JSONDecodeError as exc:
+        return str(exc), list(declared_keys)
+    # Well-formed JSON that is not an object (a bare array or scalar): no declared key can be read.
+    return "the answer is valid JSON but not a JSON object", list(declared_keys)
 
 
 def _unwrap_declared_value(value: Any) -> Any:
@@ -1253,6 +1292,11 @@ async def run_tool_use_loop(
     # tool call AND one extra iteration, spent only on the repair, and only once. Not a standing
     # exemption: the member's cap binds again on the very next call after the granted one.
     json_repair_grant = resume_state.json_repair_grant if resume_state is not None else 0
+    # #1111 decision 1: the final-answer correction's one-shot flag and its grant — one extra
+    # iteration on top of the member's budget, the #853 ruling applied to the sibling correction, so
+    # a member that answers badly on its last allowed iteration can still write the fixed answer.
+    output_repair_used = resume_state.output_repair_used if resume_state is not None else False
+    output_repair_grant = resume_state.output_repair_grant if resume_state is not None else 0
     # #580: set when a retrieval reports data-absence (an empty result it flagged). A run that
     # completes after this degrades to a flagged PARTIAL (never a silent SUCCEEDED) — ADR-021.
     # Intentionally NOT carried across a HITL resume (a fresh nonlocal): an empty-retrieval-then-
@@ -1584,6 +1628,8 @@ async def run_tool_use_loop(
                     redact_patterns=[p.pattern for p in redactors],
                     json_repair_used=json_repair_used,
                     json_repair_grant=json_repair_grant,
+                    output_repair_used=output_repair_used,
+                    output_repair_grant=output_repair_grant,
                 )
                 return _escalate(
                     f"{spec.binding}.{spec.operation}",
@@ -2023,7 +2069,7 @@ async def run_tool_use_loop(
     # spent repair turn grants one extra iteration alongside the extra tool call, so a member that
     # discovers its malformed document on its last allowed iteration can still write the fixed one.
     iteration = resume_iteration
-    while iteration < policy.max_iterations + json_repair_grant:
+    while iteration < policy.max_iterations + json_repair_grant + output_repair_grant:
         iteration += 1
         if _over_wall_time():
             return _budget_gate("budget", "wall_time", "wall-time budget exhausted", iteration)
@@ -2213,6 +2259,36 @@ async def run_tool_use_loop(
                         _truncate(detail),
                     )
                 )
+            # #1111 decision 1: one bounded correction turn when a member that declares required
+            # output keys ends on an answer that does not parse, or parses without a declared key.
+            # Runs on the otherwise-settled answer (citation + link gates above) and before any
+            # terminal, so a degraded member is corrected too. Once spent, the answer falls through
+            # to today's path unchanged: the #697 contract check downstream still fails the member.
+            if policy.declared_output_keys and not output_repair_used:
+                parse_error, missing_keys = _declared_output_problem(
+                    last_text, policy.declared_output_keys
+                )
+                if missing_keys:
+                    output_repair_used = True
+                    output_repair_grant = 1
+                    problem = _OUTPUT_REPAIR_PARSE.format(error=parse_error) if parse_error else ""
+                    correction = _OUTPUT_REPAIR_MESSAGE.format(
+                        problem=problem, missing=", ".join(missing_keys)
+                    )
+                    messages.append({"role": "assistant", "content": last_text})
+                    messages.append({"role": "user", "content": _redact(correction, redactors)})
+                    steps.append(
+                        LoopStep(
+                            len(steps),
+                            StepKind.GATE,
+                            "structured_output",
+                            _OUTPUT_REPAIR_STATUS,
+                            _truncate(
+                                json.dumps({"parse_error": parse_error, "missing": missing_keys})
+                            ),
+                        )
+                    )
+                    continue
             if retrieval_empty:
                 # #580: the member completed, but a retrieval reported data-absence — degrade to a
                 # flagged PARTIAL (never a silent SUCCEEDED) via #587's _degrade, so the data gap
@@ -2326,7 +2402,7 @@ async def run_tool_use_loop(
             "citation",
             "citation_unresolved",
             f"the member could not produce a citable answer within the budget ({citation_blocked})",
-            policy.max_iterations + json_repair_grant,
+            policy.max_iterations + json_repair_grant + output_repair_grant,
         )
     # #944: the member spent the budget without producing an answer whose links it actually
     # fetched. This DEGRADES — PARTIAL, typed, carrying the last draft — and deliberately does NOT
@@ -2345,7 +2421,7 @@ async def run_tool_use_loop(
             LINK_FLAG_STATUS,
             "the member could not link only pages it fetched within the budget "
             f"({_named(links_blocked or [])})",
-            policy.max_iterations + json_repair_grant,
+            policy.max_iterations + json_repair_grant + output_repair_grant,
         )
     # iteration cap reached without a final answer → escalate or degrade (#587).
     #
@@ -2367,5 +2443,5 @@ async def run_tool_use_loop(
         "budget",
         "iteration_cap",
         f"tool-use loop did not converge{repeat_note}",
-        policy.max_iterations + json_repair_grant,
+        policy.max_iterations + json_repair_grant + output_repair_grant,
     )
