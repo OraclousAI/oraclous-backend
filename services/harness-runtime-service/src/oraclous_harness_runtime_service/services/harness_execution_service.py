@@ -178,6 +178,16 @@ _PROVIDER_ERROR_TYPES: dict[str, _ProviderError] = {
     "PROVIDER_RATE_LIMITED": _ProviderError(
         True, False, "the tool's provider is rate-limiting this organisation"
     ),
+    # #1111 review round 1, M1. The connector's own outbound call to the third party failed in
+    # transport — ``search_providers`` raises it from any ``httpx.HTTPError``. Transient, because a
+    # network failure reaching a provider is the most retry-worthy thing in this table and the
+    # alternative (no classification at all) drops it back onto the raw-prose path this issue
+    # exists to close. Ambiguous, because the token is emitted from BOTH halves of the exchange:
+    # a connection that never opened carries it, and so does a read timeout after the provider
+    # already acted. So a retrieval retries it and an operation that may write does not.
+    "PROVIDER_UNREACHABLE": _ProviderError(
+        True, True, "the tool's provider could not be reached"
+    ),
     "PROVIDER_QUOTA_EXHAUSTED": _ProviderError(
         False, False, "the tool's credential has no remaining quota"
     ),
