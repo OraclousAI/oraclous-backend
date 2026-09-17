@@ -25,6 +25,7 @@ from oraclous_capability_registry_service.routes.capability_routes import (
 )
 from oraclous_capability_registry_service.routes.execution_routes import router as execution_router
 from oraclous_capability_registry_service.routes.instance_routes import router as instance_router
+from oraclous_capability_registry_service.routes.internal_routes import router as internal_router
 from oraclous_capability_registry_service.routes.provenance_routes import (
     router as provenance_router,
 )
@@ -56,6 +57,10 @@ def create_app(*, lifespan=None) -> FastAPI:
     app.include_router(execution_router)
     app.include_router(binding_router)
     app.include_router(provenance_router)
+    # the service-to-service plane (X-Internal-Key; never edge-routed by the gateway) — see
+    # routes/internal_routes.py for why the run-identity writes live here and not beside the
+    # member-facing instance routes.
+    app.include_router(internal_router)
 
     @app.exception_handler(CapabilityNotFoundError)
     async def _on_not_found(_: Request, exc: CapabilityNotFoundError) -> JSONResponse:

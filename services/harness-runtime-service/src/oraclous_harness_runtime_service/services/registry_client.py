@@ -135,12 +135,20 @@ class RegistryClient:
         base_url: str,
         *,
         headers: dict[str, str],
+        internal_key: str = "",
         timeout: float = 30.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        # #1130: the registry's ``/internal/v1`` plane is gated on the shared key, and the harness
+        # reaches it in EVERY auth mode — ``build_downstream_headers`` only carries the key in
+        # gateway/jwt mode, where the caller's identity is header-asserted, so dev mode (a bearer)
+        # would otherwise 401 on the internal plane. Mirrors ``BrokerClient``, which has always
+        # taken the key explicitly rather than inferring it from the auth mode. A caller-supplied
+        # header still wins, so nothing already sending its own key changes.
+        key_header = {"X-Internal-Key": internal_key} if internal_key else {}
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
-            headers={"Content-Type": "application/json", **headers},
+            headers={"Content-Type": "application/json", **key_header, **headers},
             timeout=timeout,
             transport=transport,
         )
@@ -237,13 +245,17 @@ class RegistryClient:
     ) -> dict[str, Any]:
         """Replace the instance's stored configuration (#1130).
 
-        The registry reads that stored row — not a tool call's arguments — on every dispatch, so
-        this is the only channel through which a run that REUSES an instance can bind its own
-        per-run identity (producer/graph_id/working_dir/precedence). A full replace: the caller
+        Keeps the registry's stored row coherent with the run that is currently set up on a reused
+        instance. It is NOT what a dispatch trusts — ``execute`` carries this run's identity with
+        the call itself — so a row another run has since rebound cannot misfile this run's output.
+
+        On the ``/internal/v1`` plane (X-Internal-Key), never the member-facing ``/api/v1`` one:
+        the document replaced here carries the producer identity, and the gateway never routes
+        ``/internal``, so no human caller can reach it to forge one. A full replace: the caller
         merges onto what it read, exactly as ``configure_credentials`` requires for mappings.
         """
         resp = await self._client.put(
-            f"/api/v1/instances/{instance_id}/configuration",
+            f"/internal/v1/instances/{instance_id}/configuration",
             json={"configuration": configuration},
         )
         return await self._json(resp)

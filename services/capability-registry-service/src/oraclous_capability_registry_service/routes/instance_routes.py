@@ -22,7 +22,6 @@ from oraclous_capability_registry_service.schema.instance_schema import (
     CreateInstance,
     InstanceListResponse,
     InstanceOut,
-    UpdateConfiguration,
     ValidationReport,
 )
 
@@ -63,19 +62,6 @@ async def configure_credentials(
     mgr: InstanceManagerDep,
 ) -> InstanceOut:
     return await mgr.configure_credentials(
-        instance_id=instance_id, body=body, organisation_id=organisation_id
-    )
-
-
-@router.put("/{instance_id}/configuration", response_model=InstanceOut)
-async def update_configuration(
-    instance_id: UUID,
-    body: UpdateConfiguration,
-    organisation_id: OrganisationIdDep,
-    mgr: InstanceManagerDep,
-) -> InstanceOut:
-    """Replace this instance's stored configuration (#1130). PUT, because it is a full replace."""
-    return await mgr.update_configuration(
         instance_id=instance_id, body=body, organisation_id=organisation_id
     )
 
