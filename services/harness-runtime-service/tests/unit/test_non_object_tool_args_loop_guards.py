@@ -211,3 +211,65 @@ async def test_site_restriction_gate_never_dispatches_a_non_object_call(bad_args
     )
 
     assert dispatch.calls == []
+
+
+# ── site 2: the #853 JSON-repair gate — `tc["args"].get("source_type"/"content")` ─────────────────
+
+
+@NON_OBJECT_ARGS
+async def test_json_repair_gate_survives_non_object_args(bad_args: Any) -> None:
+    """A `requires_valid_json` member whose model sends a non-object `args` to its `graph-ingest`
+    call must not die — this gate's own `.get("source_type", ...)` is the first thing to touch
+    `tc["args"]`, before the malformed-JSON check it exists for is even reached."""
+    llm = _CallsBadArgsThenAnswers(_INGEST.name, bad_args)
+    dispatch = _RecordingDispatch()
+
+    result = await run_tool_use_loop(
+        llm=llm,
+        system="",
+        user_input="write the decision brief",
+        tool_specs=[_INGEST],
+        dispatch=dispatch,
+        policy=_env(requires_valid_json=True),
+    )
+
+    assert result.status is HarnessStatus.SUCCEEDED, (
+        f"the run did not survive a non-object args={bad_args!r}: status={result.status}, "
+        f"error_type={result.error_type}"
+    )
+
+
+@NON_OBJECT_ARGS
+async def test_json_repair_gate_tells_the_model_the_coded_refusal(bad_args: Any) -> None:
+    llm = _CallsBadArgsThenAnswers(_INGEST.name, bad_args)
+    dispatch = _RecordingDispatch()
+
+    await run_tool_use_loop(
+        llm=llm,
+        system="",
+        user_input="write the decision brief",
+        tool_specs=[_INGEST],
+        dispatch=dispatch,
+        policy=_env(requires_valid_json=True),
+    )
+
+    tool_message = _tool_message_for(llm.messages_seen, "bad-call-1")
+    assert tool_message is not None, "the model was never handed a tool-role reply for its call"
+    assert NON_OBJECT_ARGUMENTS_REFUSED in tool_message["content"]
+
+
+@NON_OBJECT_ARGS
+async def test_json_repair_gate_never_dispatches_a_non_object_call(bad_args: Any) -> None:
+    llm = _CallsBadArgsThenAnswers(_INGEST.name, bad_args)
+    dispatch = _RecordingDispatch()
+
+    await run_tool_use_loop(
+        llm=llm,
+        system="",
+        user_input="write the decision brief",
+        tool_specs=[_INGEST],
+        dispatch=dispatch,
+        policy=_env(requires_valid_json=True),
+    )
+
+    assert dispatch.calls == []
