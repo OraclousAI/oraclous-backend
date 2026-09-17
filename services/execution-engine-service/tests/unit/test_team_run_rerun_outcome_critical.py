@@ -211,6 +211,59 @@ async def test_rerun_does_not_409_when_the_only_faulted_member_is_critical_and_e
     assert result.state == "QUEUED"
 
 
+def _two_ordinary_members_manifest() -> dict[str, Any]:
+    """Two plain (non-``outcome_critical``) members. A real drive can only classify its overall
+    result "failed" when a member IS failed/blocked, or when ``critical_deliverable_loss_present``
+    fires — neither is possible here, so a FAILED row over this manifest with every member already
+    "succeeded"/"partial" cannot come from ``run_team`` at all. It models exactly the #1069 ruling's
+    named non-death examples (a revision-limit rejection, a budget halt) and a legacy row already on
+    disk — the classes of FAILED run the ruling's unconditional backfill never reaches."""
+    return {
+        "ohm_version": "1.1",
+        "metadata": {
+            "id": str(uuid.uuid4()),
+            "name": "team",
+            "owner_organization_id": str(_ORG),
+            "kind": "team",
+        },
+        "members": [
+            {"role": "a", "kind": "agent", "manifest_ref": "org:x/a@1"},
+            {"role": "b", "kind": "agent", "manifest_ref": "org:x/b@1", "depends_on": ["a"]},
+        ],
+        "runtime": {"entrypoint": "a"},
+    }
+
+
+async def test_rerun_409s_when_every_member_settled_with_no_outcome_fault() -> None:
+    # #1069 criterion 3: the ruling's unconditional backfill (`_backfill_unreached`) runs ONLY from
+    # a drive death (`_drive`'s except handler or the reaper) and always leaves at least one member
+    # "failed" — so it can never produce a FAILED row shaped like this one. `rerun()` itself is
+    # untouched by the ruling, so this stays a 409 exactly as it did before #819/#1069; the point of
+    # pinning it here is that the backfill does not fire on this path at all — proven below by the
+    # row's member_status coming back byte-identical after the 409.
+    repo = FakeTeamRunRepo()
+    svc = _svc(repo)
+    row = EngineTeamRun(
+        id=uuid.uuid4(),
+        organisation_id=_ORG,
+        user_id=_USER,
+        manifest=_two_ordinary_members_manifest(),
+        sub_harnesses={},
+        gate_decisions={},
+        state="FAILED",
+        results={"a": {"output": "a-out"}, "b": {"output": "best-effort"}},
+        paused_at=[],
+        member_status={"a": "succeeded", "b": "partial"},
+    )
+    repo.rows[row.id] = row
+
+    with pytest.raises(TeamRunError) as ei:
+        await svc.rerun(row.id, _principal())
+    assert ei.value.status_code == 409
+    assert ei.value.error_type == "nothing_to_rerun"
+    assert row.member_status == {"a": "succeeded", "b": "partial"}  # the backfill never touched it
+
+
 async def test_rerun_still_409s_when_truly_nothing_is_re_runnable() -> None:
     # regression guard: a FAILED row with an ordinary clean member_status (nothing failed, nothing
     # critical-and-empty) is still a genuine 409 — this rule must not make rerun() permissive.

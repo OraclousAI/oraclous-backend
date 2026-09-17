@@ -44,7 +44,10 @@ from typing import Any
 import pytest
 from celery.exceptions import SoftTimeLimitExceeded
 from oraclous_execution_engine_service.models.team_run import EngineTeamRun
-from oraclous_execution_engine_service.services.team_run_service import TeamRunService
+from oraclous_execution_engine_service.services.team_run_service import (
+    TeamRunService,
+    load_team_manifest,
+)
 from oraclous_governance import Principal, PrincipalType
 
 pytestmark = pytest.mark.unit
@@ -363,6 +366,19 @@ async def test_a_checkpoint_write_failure_does_not_fail_the_run() -> None:
 # ── criteria 2, 3 + decisions 2, 3: a killed drive is recoverable ────────────────────────────────
 
 
+def test_backfill_unreached_keeps_each_settled_members_own_terminal_status() -> None:
+    # #1069 criterion 3 (the second half): dropping the "at least one settled member" guard must
+    # not touch what happens to a member that DID settle. Only "running" and a missing entry are
+    # ever rewritten — "succeeded", "partial" and "blocked" all pass through untouched, whichever
+    # of them the drive itself recorded. Unaffected by the guard removal, so this already holds on
+    # main; it is a regression guard against the implementer widening the rewrite by mistake.
+    team = load_team_manifest(_team([_agent("a"), _agent("b"), _agent("c"), _agent("d")]))
+    filled = TeamRunService._backfill_unreached(
+        {"a": "succeeded", "b": "partial", "c": "blocked", "d": "running"}, team
+    )
+    assert filled == {"a": "succeeded", "b": "partial", "c": "blocked", "d": "failed"}
+
+
 async def test_a_wall_clock_breach_keeps_the_finished_members_output() -> None:
     # A real orchestrator-level raise, no mocking: 'a' settles, then the team's own deadline expires
     # while 'b' is in flight and run_team raises OHMError into the drive's blanket handler. That
@@ -667,6 +683,47 @@ async def test_a_reaped_run_with_no_checkpointed_member_backfills_and_is_rerunna
 
     requeued = await svc.rerun(killed.id, _principal())
     assert requeued.state == "QUEUED"
+
+
+async def test_a_run_backfilled_from_a_lone_running_member_redispatches_from_scratch() -> None:
+    # #1069 criterion 2: when NOTHING settled before the kill, the backfilled row has no succeeded
+    # or partial member for `_completed_for_resume` to seed — the re-drive dispatches every member
+    # fresh, exactly like the run's very first drive. Contrast with
+    # `test_a_wall_clock_breach_is_rerunnable_and_resumes_only_the_unfinished` below, where 'a' HAD
+    # settled and is reused rather than re-dispatched.
+    #
+    # The setup mirrors `test_a_reaped_run_with_only_a_running_member_backfills_and_is_rerunnable`
+    # above (that test already pins the backfilled shape); this test's own contribution is what
+    # happens on the RE-DRIVE that the ruling newly makes reachable.
+    repo = FakeTeamRunRepo()
+    harness = ScriptedHarness()
+    svc, _ = _svc(repo, harness)
+    killed = EngineTeamRun(
+        id=uuid.uuid4(),
+        organisation_id=_ORG,
+        user_id=_USER,
+        manifest=_team([_agent("a")]),
+        sub_harnesses={},
+        gate_decisions={},
+        state="RUNNING",
+        results={},
+        member_status={"a": "running"},  # dispatched, then killed — nothing delivered
+        paused_at=[],
+    )
+    repo.rows[killed.id] = killed
+
+    await svc.reap_stale(FakeMaintenance([killed]), older_than=_dt.datetime.now(_dt.UTC))
+    assert killed.state == "FAILED"
+
+    # nothing for a re-drive to seed — the whole point of #1069's criterion 2
+    assert TeamRunService._completed_for_resume(killed) == {}
+
+    requeued = await svc.rerun(killed.id, _principal())  # #1069: no longer a 409
+    assert requeued.state == "QUEUED"
+
+    final = await svc.drive(killed.id, _principal())
+    assert final.state == "SUCCEEDED"
+    assert harness.roles == ["a"]  # 'a' was actually re-dispatched, not silently treated as done
 
 
 async def test_a_drive_that_dies_before_any_member_settles_backfills_and_is_rerunnable() -> None:
