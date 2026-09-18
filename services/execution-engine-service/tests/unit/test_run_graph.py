@@ -37,6 +37,7 @@ so the wire JSON still says ``from`` per #1154 — this dataclass is never seria
 from __future__ import annotations
 
 import dataclasses
+import uuid
 from typing import Any
 
 import pytest
@@ -44,6 +45,14 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _VERDICT_ESCALATION_ROLE = "__verdict_escalation__"
+# a fixed identity default for ``_derive``'s ``team_run_id`` kwarg, so every existing call site in
+# this file keeps working unchanged (#1154 ruling 1: ``RunGraph`` carries ``team_run_id``/``state``
+# directly, mirroring ``TeamRunStatus``, ``team_run_service.py:443``).
+_RUN_ID = uuid.uuid4()
+# the file's two live/terminal state splits, shared by the absent-member tests (section 3) and the
+# unrecognized-stored-status tests (section 3b), so the classification is never hand-copied twice.
+_LIVE_STATES = ["QUEUED", "RUNNING", "PAUSED"]
+_TERMINAL_STATES = ["SUCCEEDED", "FAILED", "REJECTED", "COST_BUDGET"]
 
 
 def _member(role: str, **over: Any) -> dict[str, Any]:
@@ -78,6 +87,7 @@ def _derive(**kwargs: Any) -> Any:
 
     defaults: dict[str, Any] = {
         "manifest": None,
+        "team_run_id": _RUN_ID,
         "state": "RUNNING",
         "member_status": None,
         "member_error_codes": None,
@@ -96,6 +106,21 @@ def _node(graph: Any, role: str) -> Any:
     raise AssertionError(f"no node for role {role!r} in {graph.nodes!r}")
 
 
+# ── 0. team_run_id / state pass straight through ────────────────────────────
+
+
+def test_team_run_id_and_state_pass_through_unchanged() -> None:
+    """``RunGraph`` carries ``team_run_id``/``state`` directly (#1154 ruling 1), mirroring
+    ``TeamRunStatus`` (``team_run_service.py:443``), so the route can map them onto
+    ``TeamRunGraphOut`` without recomputing or re-deriving either value."""
+    run_id = uuid.uuid4()
+
+    graph = _derive(team_run_id=run_id, state="PAUSED", manifest=_manifest([]))
+
+    assert graph.team_run_id == run_id
+    assert graph.state == "PAUSED"
+
+
 # ── 1. ordering ────────────────────────────────────────────────────────────
 
 
@@ -105,7 +130,10 @@ def test_nodes_follow_declaration_order_edges_follow_depends_on() -> None:
     members = [
         _member("writer", depends_on=["researcher"]),
         _member("researcher", depends_on=[]),
-        _member("editor", depends_on=["writer", "researcher"]),
+        # "writer" is repeated and "ghost" names no declared member (#1154, B3): the edge set
+        # must still de-duplicate the repeat and silently drop the dangling dependency, never
+        # raise and never draw a second writer->editor edge or a ghost edge.
+        _member("editor", depends_on=["writer", "researcher", "writer", "ghost"]),
     ]
     manifest = _manifest(members)
 
@@ -118,7 +146,8 @@ def test_nodes_follow_declaration_order_edges_follow_depends_on() -> None:
         RunGraphEdge(from_="researcher", to="editor"),
     }
     assert set(graph.edges) == expected_edges
-    assert len(graph.edges) == len(expected_edges)  # de-duplicated, no accidental repeats
+    assert len(graph.edges) == 3  # real de-duplication, not set-equality hiding a duplicate
+    assert all(e.from_ != "ghost" and e.to != "ghost" for e in graph.edges)
 
 
 # ── 2. stored status mapping ─────────────────────────────────────────────
@@ -152,7 +181,7 @@ def test_stored_status_mapping(stored: str, expected: str) -> None:
 # ── 3. absent status ──────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("state", ["QUEUED", "RUNNING", "PAUSED"])
+@pytest.mark.parametrize("state", _LIVE_STATES)
 def test_absent_member_pending_on_live_run(state: str) -> None:
     manifest = _manifest([_member("solo")])
 
@@ -161,11 +190,42 @@ def test_absent_member_pending_on_live_run(state: str) -> None:
     assert _node(graph, "solo").status == "pending"
 
 
-@pytest.mark.parametrize("state", ["SUCCEEDED", "FAILED", "REJECTED", "COST_BUDGET"])
+@pytest.mark.parametrize("state", _TERMINAL_STATES)
 def test_absent_member_not_reached_on_terminal(state: str) -> None:
     manifest = _manifest([_member("solo")])
 
     graph = _derive(manifest=manifest, state=state, member_status={})
+
+    assert _node(graph, "solo").status == "not_reached"
+
+
+# ── 3b. unrecognized stored status ───────────────────────────────────────────
+# #1154 ruling (item 10): a stored ``member_status`` value outside the contract's listed values
+# behaves EXACTLY like no recorded status at all — never a 500, never surfaced verbatim.
+
+
+@pytest.mark.parametrize("state", _LIVE_STATES)
+def test_unrecognized_stored_status_pending_on_live_run(state: str) -> None:
+    manifest = _manifest([_member("solo")])
+
+    graph = _derive(
+        manifest=manifest,
+        state=state,
+        member_status={"solo": "some_bogus_value_never_in_the_contract"},
+    )
+
+    assert _node(graph, "solo").status == "pending"
+
+
+@pytest.mark.parametrize("state", _TERMINAL_STATES)
+def test_unrecognized_stored_status_not_reached_on_terminal(state: str) -> None:
+    manifest = _manifest([_member("solo")])
+
+    graph = _derive(
+        manifest=manifest,
+        state=state,
+        member_status={"solo": "some_bogus_value_never_in_the_contract"},
+    )
 
     assert _node(graph, "solo").status == "not_reached"
 
@@ -184,7 +244,10 @@ def test_paused_gate_is_waiting_approval() -> None:
     graph = _derive(
         manifest=manifest,
         state="PAUSED",
-        member_status={"writer": "succeeded"},
+        # the gate carries a STALE recorded status ("succeeded" for a human gate that has not
+        # actually run) alongside its presence in paused_at: the paused_at check (steps 1-2) must
+        # win over the recorded-status branch (step 3), never the other way round (#1154).
+        member_status={"writer": "succeeded", "gate": "succeeded"},
         paused_at=["gate"],
     )
 
@@ -229,7 +292,9 @@ def test_rejected_gate_is_rejected() -> None:
     graph = _derive(
         manifest=manifest,
         state="REJECTED",
-        member_status={"writer": "succeeded"},
+        # same STALE-recorded-status guard as the PAUSED case above: paused_at naming the
+        # rejected gate (steps 1-2) must win over the gate's own stale recorded status (step 3).
+        member_status={"writer": "succeeded", "gate": "succeeded"},
         paused_at=["gate"],
     )
 
@@ -521,13 +586,16 @@ def test_no_payload_or_condition_value_reaches_the_graph() -> None:
     sentinel = "SENTINEL-do-not-leak-4f6c2b"
     manifest = _manifest(
         [
-            _member("researcher", depends_on=[]),
+            # #1154: "never leak ... a member's instructions, description" — plant the sentinel on
+            # the member itself, not only inside a run_if condition.
+            _member("researcher", depends_on=[], subgoal=sentinel, description=sentinel),
             _member(
                 "writer",
                 depends_on=["researcher"],
                 run_if={
                     "from_role": "researcher",
-                    "field": "score",
+                    # the compared FIELD NAME must never leak either, not only the compared value
+                    "field": sentinel,
                     "op": "gte",
                     "value": sentinel,
                 },
@@ -546,3 +614,7 @@ def test_no_payload_or_condition_value_reaches_the_graph() -> None:
 
     flattened = repr(dataclasses.asdict(graph))
     assert sentinel not in flattened
+    # prove this is a REAL, populated graph that correctly resolved the sentinel-bearing member —
+    # not a stub returning an empty RunGraph(nodes=[], edges=[]), which would trivially pass the
+    # assertion above too.
+    assert _node(graph, "writer").skip_reason == "condition_false"
