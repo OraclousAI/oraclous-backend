@@ -15,7 +15,7 @@ from enum import StrEnum
 
 
 class ErrorCode(StrEnum):
-    """The 18-value closed taxonomy. The frontend branches only on this code."""
+    """The 19-value closed taxonomy. The frontend branches only on this code."""
 
     VALIDATION_FAILED = "VALIDATION_FAILED"
     MALFORMED_REQUEST = "MALFORMED_REQUEST"
@@ -49,6 +49,12 @@ class ErrorCode(StrEnum):
     # provider refuses the key (401/403 from the LLM client). "Connect one" and "replace the one you
     # connected" send the user to different next steps, so they cannot share a code.
     MODEL_CREDENTIAL_REJECTED = "MODEL_CREDENTIAL_REJECTED"
+    # #1151 — the model WAS reachable and the key WAS accepted, but the read-back could not use
+    # what came back: every unparseable reader output, and every non-SUCCEEDED terminal run
+    # (FAILED/REJECTED/COST_BUDGET) other than a credential rejection, which keeps its own code
+    # above. 502, not 422 — the request was well-formed and nothing about the caller's own setup
+    # was at fault.
+    MODEL_ANSWER_UNUSABLE = "MODEL_ANSWER_UNUSABLE"
 
 
 @dataclass(frozen=True)
@@ -115,6 +121,15 @@ CODE_POLICY: dict[ErrorCode, CodePolicy] = {
         422,
         False,
         "Your model provider refused the connected model key. Replace the key and try again.",
+    ),
+    # 502, not 422 — the request was well-formed and the model WAS reachable; it is the model's own
+    # answer that could not be used (#1151 ruling). Not retryable by default: the same idea and
+    # model combination is likely to fail the same way again, so the client's guidance is to change
+    # something (retry anyway, or pick a different model) rather than to just resubmit.
+    ErrorCode.MODEL_ANSWER_UNUSABLE: CodePolicy(
+        502,
+        False,
+        "The model did not return a usable answer. Try again, or choose a different model.",
     ),
 }
 

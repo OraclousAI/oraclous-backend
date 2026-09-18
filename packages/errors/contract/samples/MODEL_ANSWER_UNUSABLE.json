@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "MODEL_ANSWER_UNUSABLE",
+    "message": "The model did not return a usable answer. Try again, or choose a different model.",
+    "requestId": "req_01J9ZR3F7Q8T2M6N0P4S9VWXCD",
+    "retryable": false
+  }
+}

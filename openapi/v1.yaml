@@ -2764,6 +2764,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "502": { $ref: "#/components/responses/ModelAnswerUnusable" }
   /v1/engine/compiler-runs:
     post:
       tags: [engine]
@@ -3486,6 +3487,7 @@ components:
                 - IDEA_TOO_VAGUE
                 - MODEL_CREDENTIAL_REQUIRED
                 - MODEL_CREDENTIAL_REJECTED
+                - MODEL_ANSWER_UNUSABLE
             message:
               type: string
               minLength: 1
@@ -4047,6 +4049,17 @@ components:
         provider) (MODEL_CREDENTIAL_REJECTED). Distinct from MODEL_CREDENTIAL_REQUIRED, which means
         no credential is connected: here the user has to replace the key, not connect one. The
         message names no key and no credential.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    ModelAnswerUnusable:
+      description: >-
+        The model was reachable and its credential was accepted, but the read-back could not use
+        what came back — the reader's output did not parse into a restatement, or the run settled
+        into any non-SUCCEEDED terminal state other than a credential rejection (MODEL_ANSWER_UNUSABLE).
+        Distinct from MODEL_CREDENTIAL_REJECTED: here the caller's own setup was fine and nothing
+        about the request was at fault, so this is a 502, not a 4xx. The message names no model
+        output and no run error text.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorEnvelope" }
