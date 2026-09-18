@@ -706,6 +706,11 @@ def make_harness_dispatch(
     on_member_failure: Callable[[str, str], None] | None = None,
     # #1111: (role, attempt count) for a FAILED member whose harness reported a valid count.
     on_member_attempts: Callable[[str, int], None] | None = None,
+    # #1137: (role, execution id) the instant this dispatch MINTS it, before the harness is called.
+    # Distinct from ``on_child``, which surfaces the id the harness ANSWERED with: the platform's
+    # settle-time save needs the id even on a dispatch the harness never answered cleanly, and it
+    # needs it under the producing ROLE (``on_child``'s map is keyed the other way round).
+    on_member_execution: Callable[[str, str], None] | None = None,
     # #1072: the live pooled tally (mirrors `run_team`'s own `cost_so_far`) — read ONLY to charge
     # an unconfirmed cancel's fail-closed headroom; never mutated here (on_cost still owns writes).
     cost_so_far: Callable[[], int] | None = None,
@@ -827,6 +832,17 @@ def make_harness_dispatch(
         # #1072: minted FRESH per dispatch (never reused across two dispatches of the same member)
         # so a timeout can cancel the SAME in-flight execution without racing a later one.
         execution_id = uuid.uuid4()
+        # #1137: surface it to the caller NOW, under the producing role. The harness stamps this
+        # same id onto the producer of everything the member's own tool calls write
+        # (``harness_execution_service.py``: ``{**producer, "execution_id": str(execution_id)}``),
+        # so the platform's settle-time save can stamp the identical id and a person reading the
+        # graph sees one member's tool-written and platform-written documents under one execution
+        # rather than two unrelated ones. Announced BEFORE the call, not after: a member whose
+        # harness call times out still settles through the cancel path, and the id is what a later
+        # correlation has to key on. A later attempt of the same role simply overwrites it — the
+        # newest attempt is the one whose output settles.
+        if on_member_execution is not None:
+            on_member_execution(member.role, str(execution_id))
         try:
             result = await harness.execute(
                 execution_id=execution_id,
@@ -1077,6 +1093,7 @@ async def run_team_harness(
     on_cost: Callable[[int], None] | None = None,
     on_member_failure: Callable[[str, str], None] | None = None,
     on_member_attempts: Callable[[str, int], None] | None = None,
+    on_member_execution: Callable[[str, str], None] | None = None,  # #1137: (role, execution id)
     cost_so_far: Callable[[], int] | None = None,
     workspace_root: str | None = None,
     graph_id: str | None = None,
@@ -1134,6 +1151,7 @@ async def run_team_harness(
         on_cost=_on_cost,
         on_member_failure=on_member_failure,
         on_member_attempts=on_member_attempts,
+        on_member_execution=on_member_execution,  # #1137: (role, execution id) at mint
         # #1072: the same pooled tally `run_team` gets below — so an unconfirmed cancel's
         # fail-closed pool charge reads the live tally, not a stale/zero one.
         cost_so_far=pooled_cost,
@@ -1241,6 +1259,7 @@ async def run_team_hybrid(
     on_cost: Callable[[int], None] | None = None,
     on_member_failure: Callable[[str, str], None] | None = None,
     on_member_attempts: Callable[[str, int], None] | None = None,
+    on_member_execution: Callable[[str, str], None] | None = None,  # #1137: (role, execution id)
     workspace_root: str | None = None,
     graph_id: str | None = None,
     inputs: dict[str, Any] | None = None,
@@ -1281,6 +1300,7 @@ async def run_team_hybrid(
             on_cost=on_cost,
             on_member_failure=on_member_failure,
             on_member_attempts=on_member_attempts,
+            on_member_execution=on_member_execution,  # #1137: (role, execution id) at mint
             cost_so_far=cost_so_far,  # #585: the engine's pooled tally (incl. prior_cost on resume)
             workspace_root=workspace_root,
             graph_id=graph_id,
@@ -1318,6 +1338,7 @@ async def run_team_hybrid(
         on_cost=on_cost,
         on_member_failure=on_member_failure,
         on_member_attempts=on_member_attempts,
+        on_member_execution=on_member_execution,  # #1137: (role, execution id) at mint
         # #1072: the same pooled tally threaded to `run_team`/`run_loop_seam` below (this param
         # already existed on this function) — so an unconfirmed cancel's pool charge stays live.
         cost_so_far=cost_so_far,
