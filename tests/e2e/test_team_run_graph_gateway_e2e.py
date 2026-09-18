@@ -123,7 +123,7 @@ def _conditional_studio(root: Path, nonce: str) -> None:
     to produce 5 importable single-agent sub-harnesses, not the final DAG."""
     agents = root / ".claude" / "agents"
     agents.mkdir(parents=True)
-    body = f"Reply with exactly this token and nothing else: {nonce}"
+    body = f'Reply with exactly this JSON object and nothing else: {{"summary": "{nonce}"}}'
     for role in _CONDITIONAL_ROLES:
         (agents / f"{role}.md").write_text(f"---\nname: {role}\nmodel: sonnet\n---\n{body}\n")
     for i, role in enumerate(_CONDITIONAL_ROLES, start=1):
@@ -216,7 +216,10 @@ def test_run_graph_shows_skipped_and_completed_members_through_the_gateway(
     # deliveries + 2 skips still settles SUCCEEDED. assert_run_succeeded distinguishes a genuine
     # product failure from a provider refusal (429/5xx/timeout) so a flaky model run fails legibly.
     assert_run_succeeded(done, state_key="state")
-    assert set(done["results"]) == {"scout", "summary"}  # drafter/checker/critic never dispatched
+    # drafter/checker/critic never dispatched, but run_team still writes them as None (they are
+    # skipped, not absent) — so the actual key set is every member; only the non-None ones ran.
+    assert {r for r, v in done["results"].items() if v is not None} == {"scout", "summary"}
+    assert all(done["results"][r] is None for r in ("drafter", "checker", "critic"))
     assert nonce in str(done["results"]), (
         f"nonce {nonce!r} not in team results — is the harness LIVE? results={done['results']!r}"
     )
@@ -313,8 +316,9 @@ def test_run_graph_marks_paused_gate_waiting_approval_and_cross_org_404(
         tmp_path, owner_organization_id=uuid.uuid4(), name="book studio", substrate="file"
     )
     assert imported.manifest is not None
+    manifest_dict = imported.manifest.model_dump(mode="json")
     body = {
-        "manifest": imported.manifest.model_dump(mode="json"),
+        "manifest": manifest_dict,
         "sub_harnesses": imported.sub_harnesses,
         "gate_decisions": {},  # deliberately NOT pre-approved — the run must stay PAUSED
     }
@@ -331,6 +335,7 @@ def test_run_graph_marks_paused_gate_waiting_approval_and_cross_org_404(
     assert graph_resp.status_code == 200, graph_resp.text
     graph = graph_resp.json()
 
+    assert set(graph.keys()) == {"team_run_id", "state", "nodes", "edges"}
     assert graph["team_run_id"] == run_id
     assert graph["state"] == "PAUSED"
     for node in graph["nodes"]:
@@ -341,6 +346,9 @@ def test_run_graph_marks_paused_gate_waiting_approval_and_cross_org_404(
     assert by_role["gate-a"]["kind"] == "human"
     assert by_role["gate-a"]["status"] == "waiting_approval"
     assert by_role["writer"]["status"] == "pending"  # not "not_reached" — the run is still live
+
+    edge_pairs = {(e["from"], e["to"]) for e in graph["edges"]}
+    assert edge_pairs == _expected_edges(manifest_dict)  # computed, never hand-derived
 
     intruder = gateway_client(register(f"graphgateintruder{uuid.uuid4().hex[:10]} user")["token"])
     assert intruder.get(f"/v1/engine/team-runs/{run_id}/graph").status_code == 404
