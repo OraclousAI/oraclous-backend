@@ -82,6 +82,13 @@ def build_document(
 ) -> dict[str, Any]:
     """The document the platform writes for one settled member.
 
+    PRECONDITION: every key in ``declared_keys`` is present in ``payload``. This is not a defensive
+    function — :func:`should_autosave` has already established exactly that, and the service layer
+    calls it first and only writes when it returns ``True``. A caller that breaks the precondition
+    gets a ``KeyError`` rather than a quietly truncated document, which is the right failure: a
+    deliverable missing a key it promised is the thing the trigger exists to refuse, and silently
+    shipping a partial one to the graph would look like a successful save.
+
     ``content`` is the JSON of EXACTLY the declared keys, in their declared order — nothing merged
     in from the rest of the payload (``output``, ``steps``, ``driving_signals``, or any other key
     the harness carried). A nested value round-trips intact, carried as text rather than structure.
@@ -94,7 +101,7 @@ def build_document(
     path), and the client filters it to the wire fields the ingest route reads.
     """
     ordered_keys = list(dict.fromkeys(declared_keys))
-    declared = {key: payload[key] for key in ordered_keys if key in payload}
+    declared = {key: payload[key] for key in ordered_keys}
     return {
         "content": json.dumps(declared, ensure_ascii=False, indent=2),
         "source_type": _SOURCE_TYPE,
