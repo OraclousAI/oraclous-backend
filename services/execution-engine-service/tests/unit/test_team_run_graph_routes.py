@@ -13,14 +13,21 @@ mapping, skip_reason, blocked's reason_role, loop/fan_out, ...) is pinned separa
 boundary: does the route exist, does it 404 a cross-org id the same way ``/tree``/``/status`` do,
 and does the JSON on the wire have exactly the contracted keys.
 
-RED until the route, ``TeamRunService.graph``, and the ``TeamRunGraphOut`` / ``RunGraphNodeOut`` /
-``RunGraphEdgeOut`` schema classes land. The route does not exist yet, so a request to it 404s
-through FastAPI's own unmatched-route handling today — a plain status-code assertion already fails
-RED for the two 200-expecting tests. The cross-org test asserts the exact ``TeamRunError`` body
-(not just the status code), since an unmatched route ALSO 404s and would otherwise pass by
-accident. The new schema names are imported function-locally per
-``.claude/rules/tests-seam-imports.md`` — they do not exist yet, so importing them at module level
-would abort collection for the whole run.
+RED until ``domain/run_graph.py``, the route, ``TeamRunService.graph``, and the
+``TeamRunGraphOut`` / ``RunGraphNodeOut`` / ``RunGraphEdgeOut`` schema classes ALL land. Per the
+Tests Review ruling on #1119 (``TeamRunService.graph()`` returns the domain ``RunGraph``, mirroring
+how ``TeamRunService.status()`` returns a plain ``TeamRunStatus`` for the route to map), every
+``FakeService.graph`` below builds and returns a domain ``RunGraph``/``RunGraphNode``/
+``RunGraphEdge`` — never the wire DTO directly — so the real route's own domain-to-wire mapping is
+what these tests actually exercise (once it exists). The route does not exist yet, so a request to
+it 404s through FastAPI's own unmatched-route handling before the request is ever dispatched to the
+dependency-overridden service — a plain status-code assertion already fails RED for the two
+200-expecting tests, and the fake's own function-local ``domain.run_graph`` import never even
+executes (confirmed by running this file: every case fails on the route 404, not on the import).
+The cross-org test asserts the exact ``TeamRunError`` body (not just the status code), since an
+unmatched route ALSO 404s and would otherwise pass by accident. Both the domain and schema names
+are imported function-locally per ``.claude/rules/tests-seam-imports.md`` — they do not exist yet,
+so importing either at module level would abort collection for the whole run.
 """
 
 from __future__ import annotations
@@ -74,17 +81,17 @@ async def test_graph_route_returns_contract_shape() -> None:
 
     class FakeService:
         async def graph(self, team_run_id: uuid.UUID, principal: Principal) -> Any:
-            from oraclous_execution_engine_service.schema.engine_schemas import (
-                RunGraphEdgeOut,
-                RunGraphNodeOut,
-                TeamRunGraphOut,
+            from oraclous_execution_engine_service.domain.run_graph import (
+                RunGraph,
+                RunGraphEdge,
+                RunGraphNode,
             )
 
-            return TeamRunGraphOut(
+            return RunGraph(
                 team_run_id=rid,
                 state="PAUSED",
                 nodes=[
-                    RunGraphNodeOut(
+                    RunGraphNode(
                         role="researcher",
                         kind="agent",
                         status="succeeded",
@@ -96,7 +103,7 @@ async def test_graph_route_returns_contract_shape() -> None:
                         loop=None,
                         fan_out=False,
                     ),
-                    RunGraphNodeOut(
+                    RunGraphNode(
                         role="writer",
                         kind="agent",
                         status="skipped",
@@ -108,7 +115,7 @@ async def test_graph_route_returns_contract_shape() -> None:
                         loop=None,
                         fan_out=False,
                     ),
-                    RunGraphNodeOut(
+                    RunGraphNode(
                         role="reviewer",
                         kind="agent",
                         status="failed",
@@ -120,7 +127,7 @@ async def test_graph_route_returns_contract_shape() -> None:
                         loop=None,
                         fan_out=False,
                     ),
-                    RunGraphNodeOut(
+                    RunGraphNode(
                         role="approver",
                         kind="human",
                         status="waiting_approval",
@@ -132,7 +139,7 @@ async def test_graph_route_returns_contract_shape() -> None:
                         loop=None,
                         fan_out=False,
                     ),
-                    RunGraphNodeOut(
+                    RunGraphNode(
                         role="finisher",
                         kind="agent",
                         status="pending",
@@ -146,9 +153,9 @@ async def test_graph_route_returns_contract_shape() -> None:
                     ),
                 ],
                 edges=[
-                    RunGraphEdgeOut(from_="researcher", to="writer"),
-                    RunGraphEdgeOut(from_="writer", to="reviewer"),
-                    RunGraphEdgeOut(from_="researcher", to="approver"),
+                    RunGraphEdge(from_="researcher", to="writer"),
+                    RunGraphEdge(from_="writer", to="reviewer"),
+                    RunGraphEdge(from_="researcher", to="approver"),
                 ],
             )
 
@@ -208,41 +215,50 @@ async def test_graph_route_cross_org_is_404() -> None:  # mirrors /tree's and /s
 
 async def test_graph_on_pre_migration_row_is_not_a_500() -> None:
     """A run made before the ``member_skip_reasons`` migration has no recorded reason for a skipped
-    member. #1154: that must read as ``skip_reason: "unrecorded"``, cleanly, never a 500."""
+    member — the column literally didn't exist, so ``member_skip_reasons`` is ``None``, not ``{}``.
+    #1154: that must read as ``skip_reason: "unrecorded"``, cleanly, never a 500. Built with the
+    real ``derive_run_graph`` (not a hand-built node) so this test genuinely exercises the
+    domain's "no recorded reason -> unrecorded" mechanism, not only the route's wire mapping
+    (be-test-reviewer B1)."""
     rid = uuid.uuid4()
 
     class FakeService:
         async def graph(self, team_run_id: uuid.UUID, principal: Principal) -> Any:
-            from oraclous_execution_engine_service.schema.engine_schemas import (
-                RunGraphNodeOut,
-                TeamRunGraphOut,
-            )
+            from oraclous_execution_engine_service.domain.run_graph import derive_run_graph
 
-            return TeamRunGraphOut(
+            manifest = {
+                "ohm_version": "1.1",
+                "metadata": {
+                    "id": "24869709-764a-49d0-b259-ce561340a8ec",
+                    "name": "t",
+                    "owner_organization_id": "00000000-0000-0000-0000-0000000000a0",
+                    "kind": "team",
+                },
+                "members": [
+                    {
+                        "role": "writer",
+                        "kind": "agent",
+                        "manifest_ref": "org:x/writer@1",
+                        "depends_on": [],
+                    }
+                ],
+                "runtime": {"entrypoint": "writer"},
+            }
+            return derive_run_graph(
+                manifest=manifest,
                 team_run_id=rid,
                 state="SUCCEEDED",
-                nodes=[
-                    RunGraphNodeOut(
-                        role="writer",
-                        kind="agent",
-                        status="skipped",
-                        error_code=None,
-                        skip_reason="unrecorded",
-                        reason_role=None,
-                        input_from=[],
-                        has_output=False,
-                        loop=None,
-                        fan_out=False,
-                    )
-                ],
-                edges=[],
+                member_status={"writer": "skipped"},
+                member_error_codes=None,
+                member_skip_reasons=None,
+                results=None,
+                paused_at=None,
             )
 
     async with await _client(FakeService()) as c:
         resp = await c.get(f"/v1/engine/team-runs/{rid}/graph")
 
     assert resp.status_code == 200, resp.text
-    assert resp.status_code != 500
     body = resp.json()
     assert body["nodes"][0]["skip_reason"] == "unrecorded"
     assert body["nodes"][0]["reason_role"] is None
@@ -256,16 +272,13 @@ async def test_graph_route_unset_fields_are_null_not_missing() -> None:
 
     class FakeService:
         async def graph(self, team_run_id: uuid.UUID, principal: Principal) -> Any:
-            from oraclous_execution_engine_service.schema.engine_schemas import (
-                RunGraphNodeOut,
-                TeamRunGraphOut,
-            )
+            from oraclous_execution_engine_service.domain.run_graph import RunGraph, RunGraphNode
 
-            return TeamRunGraphOut(
+            return RunGraph(
                 team_run_id=rid,
                 state="QUEUED",
                 nodes=[
-                    RunGraphNodeOut(
+                    RunGraphNode(
                         role="bare",
                         kind="agent",
                         status="pending",
