@@ -2376,11 +2376,43 @@ class TeamRunService:
             document = build_document(
                 payload=payload, declared_keys=declared_keys, producer=producer
             )
-            await self._artifacts.ingest(
-                graph_id,
-                content=document["content"],
-                source_type=document["source_type"],
-                producer=document["producer"],
+            # §3.7: the platform's write is an invocation like any other, so it produces ONE
+            # provenance record — through the run's own collector, never a direct DB write.
+            # Emitted per ATTEMPTED write (both outcomes), not per settle: the paths above that
+            # decide not to write produce nothing, so a reader counting `saved` counts documents.
+            # `output_hash` is the SETTLE's hash (the same value the member's own
+            # `engine.team_run.member` record carries), which is what ties the document back to the
+            # exact result it was built from; the ingest job's own content hash is the KGS's to
+            # record. The member's identity stays structured in `context`, never concatenated into
+            # `outcome` (24 August ruling §3). `_emit_best_effort`, not `_emit`: this is inside a
+            # hook the orchestrator invokes under `contextlib.suppress`, where the fail-closed
+            # sibling's CAS would fail a perfectly healthy run (#1027).
+            try:
+                await self._artifacts.ingest(
+                    graph_id,
+                    content=document["content"],
+                    source_type=document["source_type"],
+                    producer=document["producer"],
+                )
+            except Exception:
+                await self._emit_best_effort(
+                    org,
+                    row.user_id,
+                    row.id,
+                    "engine.team_run.artifact",
+                    "failed",
+                    context={"member": role},
+                    output_hash=output_hash,
+                )
+                raise
+            await self._emit_best_effort(
+                org,
+                row.user_id,
+                row.id,
+                "engine.team_run.artifact",
+                "saved",
+                context={"member": role},
+                output_hash=output_hash,
             )
         except Exception:  # noqa: BLE001 — never un-settle a member over a graph write
             logger.exception(
