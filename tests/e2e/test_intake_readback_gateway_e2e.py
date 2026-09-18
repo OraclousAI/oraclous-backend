@@ -18,6 +18,10 @@ Three legs, and each one is a claim the desk depends on:
 3. **The missing model.** With nothing connected, the call refuses with ``MODEL_NOT_CONNECTED``
    rather than borrowing a platform model. Both codes have to survive the gateway's error-body
    drain, which is the only reason they exist in the taxonomy at all.
+4. **The unusable answer (#1151).** A positive control proves the harness is genuinely live, then
+   two failure legs — a model id the provider has never heard of, and a real model that never
+   answers the reader's JSON shape — both land on the SAME curated ``MODEL_ANSWER_UNUSABLE`` (502),
+   never a 422, with no key or credential id leaked into the response.
 
 Requires the harness in LIVE mode and OPENROUTER_API_KEY in the env (the user's own key).
 """
@@ -230,6 +234,124 @@ def test_a_key_the_provider_refuses_is_named_as_such(
     assert resp.status_code == 422, resp.text
     assert resp.json()["error"]["code"] == "MODEL_CREDENTIAL_REJECTED", resp.text
     assert bogus_key not in resp.text, resp.text
+    assert credential_id not in resp.text, resp.text
+
+
+@requires_byom_key
+def test_a_normal_readback_with_the_test_model_succeeds(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> None:
+    """#1151 positive control: a plain read-back on ``E2E_MODEL`` still returns 200. Without this,
+    a stack accidentally left in fake mode would make BOTH failure legs below pass for the wrong
+    reason — a fake responder never fails, so it would never reach either curated 502."""
+    user = register(f"deskcontrol{uuid.uuid4().hex[:8]} user")
+    c = gateway_client(user["token"])
+    cred = c.post(
+        "/credentials/",
+        json={
+            "tool_id": str(uuid.uuid4()),
+            "user_id": user["user_id"],
+            "name": "my openrouter model",
+            "provider": "openrouter",
+            "cred_type": "api_key",
+            "credential": {"api_key": _USER_MODEL_KEY},
+        },
+    )
+    assert cred.status_code == 201, cred.text
+
+    body, _ = _read(c, _IDEA_A, _models(cred.json()["id"]))
+    _check_shape(body)
+
+
+@requires_byom_key
+def test_a_model_id_the_provider_has_never_heard_of_is_a_curated_502(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> None:
+    """#1151: the reader's run fails outright (the provider rejects the binding, not the key) —
+    a request error, not a caller mistake, so it is ``MODEL_ANSWER_UNUSABLE`` (502), never 422.
+    Neither the user's key nor the credential id may leak into the response body."""
+    user = register(f"deskbadmodel{uuid.uuid4().hex[:8]} user")
+    c = gateway_client(user["token"])
+    cred = c.post(
+        "/credentials/",
+        json={
+            "tool_id": str(uuid.uuid4()),
+            "user_id": user["user_id"],
+            "name": "my openrouter model",
+            "provider": "openrouter",
+            "cred_type": "api_key",
+            "credential": {"api_key": _USER_MODEL_KEY},
+        },
+    )
+    assert cred.status_code == 201, cred.text
+    credential_id = cred.json()["id"]
+    models = [
+        {
+            "role": "primary",
+            "binding": "openrouter/oraclous/no-such-model-1151",
+            "protocol_shape": "openai-compatible",
+            "config": {"credential_id": credential_id},
+        }
+    ]
+
+    resp = c.post(_READBACK, json={"idea": _IDEA_A, "models": models}, timeout=30.0)
+    if resp.status_code == 202:
+        resp = _collect(c, resp.json()["readback_run_id"])
+
+    assert resp.status_code != 422, resp.text
+    assert resp.status_code == 502, resp.text
+    assert resp.json()["error"]["code"] == "MODEL_ANSWER_UNUSABLE", resp.text
+    assert _USER_MODEL_KEY not in resp.text, resp.text
+    assert credential_id not in resp.text, resp.text
+
+
+@requires_byom_key
+def test_a_model_that_never_answers_json_is_a_curated_502(
+    register: Callable[..., dict], gateway_client: Callable[[str], httpx.Client]
+) -> None:
+    """#1151: the model answers, but the reader cannot use what it returned (a classifier-style
+    model that never produces the reader's JSON shape). Same curated 502 as a failed run — the
+    caller could not have prevented either by fixing their request. Neither the user's key nor the
+    credential id may leak into the response body.
+
+    ``openrouter/meta-llama/llama-guard-4-12b`` is a safety classifier: it never emits the reader's
+    JSON contract, so every real call lands in the ``_peel`` "unparseable" branch. Confirmed listed
+    via ``curl -s https://openrouter.ai/api/v1/models | jq -r '.data[].id' | grep -i guard`` before
+    pinning it here; if OpenRouter delists it, the [impl] run picks another listed classifier-style
+    model and records why here.
+    """
+    user = register(f"deskunreadable{uuid.uuid4().hex[:8]} user")
+    c = gateway_client(user["token"])
+    cred = c.post(
+        "/credentials/",
+        json={
+            "tool_id": str(uuid.uuid4()),
+            "user_id": user["user_id"],
+            "name": "my openrouter model",
+            "provider": "openrouter",
+            "cred_type": "api_key",
+            "credential": {"api_key": _USER_MODEL_KEY},
+        },
+    )
+    assert cred.status_code == 201, cred.text
+    credential_id = cred.json()["id"]
+    models = [
+        {
+            "role": "primary",
+            "binding": "openrouter/meta-llama/llama-guard-4-12b",
+            "protocol_shape": "openai-compatible",
+            "config": {"credential_id": credential_id},
+        }
+    ]
+
+    resp = c.post(_READBACK, json={"idea": _IDEA_A, "models": models}, timeout=30.0)
+    if resp.status_code == 202:
+        resp = _collect(c, resp.json()["readback_run_id"])
+
+    assert resp.status_code != 422, resp.text
+    assert resp.status_code == 502, resp.text
+    assert resp.json()["error"]["code"] == "MODEL_ANSWER_UNUSABLE", resp.text
+    assert _USER_MODEL_KEY not in resp.text, resp.text
     assert credential_id not in resp.text, resp.text
 
 
