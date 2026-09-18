@@ -96,6 +96,15 @@ run continues. Every attempted write emits an `engine.team_run.artifact` provena
 (`saved` / `failed`, carrying the settle's output hash), so what the platform wrote is auditable
 without reading the graph.
 
+It never **delays** one either. Both calls carry their own short deadline,
+`ENGINE_ARTIFACT_SAVE_TIMEOUT_SECONDS` (default `5`), rather than the engine's 30s
+knowledge-graph client default — a degraded graph service must not add a minute of wall clock to
+every settled member. Blowing the deadline is a logged skip, not an error: a listing that times
+out abandons the save outright (`member artifact save skipped, duplicate check timed out`), and an
+ingest that times out records `failed` because its outcome is genuinely unknown (`member artifact
+save timed out … (outcome unknown)`). Lower the value if your graph service is slow; the cost of
+lowering it is a missing document, which the member's own answer on the run still survives.
+
 ## Identity
 
 The gateway/dev/jwt seam mirrors the other services (ADR-018): in `gateway` mode the engine trusts the

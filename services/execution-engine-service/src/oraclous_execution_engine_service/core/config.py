@@ -41,6 +41,19 @@ HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS: float = 240.0
 # original member dispatch.
 HARNESS_CANCEL_TIMEOUT_SECONDS: float = 15.0
 
+# #1137 (craft review R1): how long the platform's OWN settle-time member-artifact save may wait on
+# the knowledge-graph-service, per call. That save is BEST-EFFORT and runs inside the checkpoint the
+# orchestrator awaits, so its deadline is bounded by the ruled requirement that it "never fails or
+# delays a settled member" — not by how long a KGS write can legitimately take. Deliberately far
+# below `knowledge_graph_request_timeout` (30s, the client-wide default a #552 done-check read
+# uses): two sequential calls at that default could add a full minute of wall clock to EVERY settled
+# member when the KGS is degraded. At this deadline the worst case is one listing plus one ingest —
+# and a listing that times out short-circuits the save entirely (a KGS too slow to list is too slow
+# to ingest), so the common degraded case costs ONE deadline, not two. Sized to comfortably cover a
+# healthy KGS's sub-second ingest enqueue while still being invisible next to a member's own
+# model-loop latency.
+ARTIFACT_SAVE_TIMEOUT_SECONDS: float = 5.0
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ENGINE_", extra="ignore")
@@ -136,6 +149,12 @@ class Settings(BaseSettings):
     # posture as `harness_member_call_timeout` — read once at the wiring boundary, threaded down
     # explicitly, never a `get_settings()` read mid-dispatch.
     harness_cancel_timeout_seconds: float = HARNESS_CANCEL_TIMEOUT_SECONDS
+
+    # #1137: the per-call bound on the platform's own best-effort member-artifact save (see the
+    # module constant above for why it is small). Same posture as the two fields above — an
+    # `ENGINE_`-prefixed operator override, read ONCE at the wiring boundary and threaded down, so
+    # an operator whose KGS is slow can lower it further without touching code.
+    artifact_save_timeout_seconds: float = ARTIFACT_SAVE_TIMEOUT_SECONDS
 
     @field_validator("harness_member_call_timeout")
     @classmethod

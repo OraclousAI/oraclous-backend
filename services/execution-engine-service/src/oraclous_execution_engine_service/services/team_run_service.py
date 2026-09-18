@@ -47,6 +47,7 @@ from oraclous_ohm.sites import InvalidSiteError, normalise_sites
 from oraclous_substrate import ProvenanceCollector, ProvenanceRecord, hash_payload
 
 from oraclous_execution_engine_service.core.config import (
+    ARTIFACT_SAVE_TIMEOUT_SECONDS,
     HARNESS_CANCEL_TIMEOUT_SECONDS,
     HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS,
 )
@@ -78,6 +79,7 @@ from oraclous_execution_engine_service.repositories.team_run_repository import T
 from oraclous_execution_engine_service.services.artifacts_client import (
     ArtifactsClient,
     ArtifactsClientError,
+    ArtifactsClientTimeout,
 )
 from oraclous_execution_engine_service.services.evaluate_client import (
     EvaluateClient,
@@ -1034,6 +1036,11 @@ class TeamRunService:
         # #1072: same posture as `harness_member_call_timeout` above — resolved once at the wiring
         # boundary (tasks/run_tasks.py) and threaded down explicitly to the cancel-on-timeout call.
         harness_cancel_timeout: float = HARNESS_CANCEL_TIMEOUT_SECONDS,
+        # #1137 (craft review R1): the per-call deadline on the platform's own settle-time
+        # member-artifact save. Same posture again — resolved once at the wiring boundary, threaded
+        # down explicitly. Small by design: this save sits inside the checkpoint the orchestrator
+        # awaits, and was ruled to never delay a settled member.
+        artifact_save_timeout: float = ARTIFACT_SAVE_TIMEOUT_SECONDS,
     ) -> None:
         # The drive runs on the WORKER (like jobs/round-tables): the request path (create/advance)
         # needs `enqueue` (hand the QUEUED run to the broker) but NOT a harness; the worker `drive`
@@ -1061,6 +1068,7 @@ class TeamRunService:
         self._registry = registry
         self._harness_member_call_timeout = harness_member_call_timeout
         self._harness_cancel_timeout = harness_cancel_timeout
+        self._artifact_save_timeout = artifact_save_timeout
 
     def _org(self, principal: Principal) -> uuid.UUID:
         if principal.organisation_id is None:  # fail-closed tenancy (ADR-006)
@@ -2327,7 +2335,21 @@ class TeamRunService:
 
         Best-effort, unconditionally: every failure — an unreachable KGS, a rejected ingest, a
         malformed member — is logged and swallowed. This runs after the member's result is already
-        durable, and a graph write must never be able to take that away."""
+        durable, and a graph write must never be able to take that away.
+
+        BOUNDED, equally unconditionally (craft review R1). This sits inside ``_checkpoint``, which
+        the orchestrator awaits before the run can advance, so the ruled "never delays a settled
+        member" is a real latency budget, not a figure of speech: both calls carry
+        ``artifact_save_timeout`` (a few seconds, ``ENGINE_ARTIFACT_SAVE_TIMEOUT_SECONDS``) instead
+        of the client-wide 30s default, and a blown deadline is a logged skip, never an error. A
+        listing that times out abandons the save outright, so a degraded KGS costs ONE deadline in
+        the common case and two in the worst — against the ~60s two 30s calls could have cost.
+
+        NOT detached into a background task, deliberately, even though that would cost the
+        checkpoint nothing: this runs inside a Celery worker task that closes its event loop and
+        its HTTP clients when the drive returns, so a detached save would be cancelled mid-flight
+        on every normal shutdown and lose the very deliverable this issue exists to stop losing. A
+        bounded await is a worse tail latency and a write that actually happens."""
         graph_id = row.graph_id
         if self._artifacts is None or graph_id is None:
             return
@@ -2349,8 +2371,25 @@ class TeamRunService:
             existing: list[dict[str, Any]] | None
             try:
                 existing = await self._artifacts.list_artifacts(
-                    graph_id, team_run_id=row.id, member_role=role
+                    graph_id,
+                    team_run_id=row.id,
+                    member_role=role,
+                    timeout=self._artifact_save_timeout,
                 )
+            except ArtifactsClientTimeout:
+                # the DEADLINE, not an error: a KGS too slow to answer a one-row listing is too
+                # slow to accept the ingest that follows, and this member is already settled and
+                # waiting on us. Give up the whole save here so the degraded case costs ONE
+                # deadline rather than two. Logged, never raised, never provenance: nothing was
+                # attempted, so there is no write outcome to record.
+                logger.warning(
+                    "member artifact save skipped, duplicate check timed out after %ss: "
+                    "team_run_id=%s member=%s",
+                    self._artifact_save_timeout,
+                    row.id,
+                    role,
+                )
+                return
             except ArtifactsClientError:
                 logger.warning(
                     "member artifact duplicate check inconclusive, writing anyway: "
@@ -2393,7 +2432,32 @@ class TeamRunService:
                     content=document["content"],
                     source_type=document["source_type"],
                     producer=document["producer"],
+                    timeout=self._artifact_save_timeout,
                 )
+            except ArtifactsClientTimeout:
+                # the deadline again — a clean give-up, not an error path. The record is `failed`
+                # like any other unconfirmed write: the outcome is genuinely UNKNOWN (the KGS may
+                # yet enqueue the job), and a save the platform cannot confirm must never count as
+                # one, so a reader counting `saved` still counts documents it can trust. Warning,
+                # not `logger.exception`: a slow upstream is an operational condition, not a defect
+                # in this code, and it must not read as one in the error log.
+                await self._emit_best_effort(
+                    org,
+                    row.user_id,
+                    row.id,
+                    "engine.team_run.artifact",
+                    "failed",
+                    context={"member": role},
+                    output_hash=output_hash,
+                )
+                logger.warning(
+                    "member artifact save timed out after %ss (outcome unknown): "
+                    "team_run_id=%s member=%s",
+                    self._artifact_save_timeout,
+                    row.id,
+                    role,
+                )
+                return
             except Exception:
                 await self._emit_best_effort(
                     org,

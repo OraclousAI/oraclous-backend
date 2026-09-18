@@ -22,6 +22,17 @@ class ArtifactsClientError(Exception):
     an inconclusive read."""
 
 
+class ArtifactsClientTimeout(ArtifactsClientError):
+    """The call did not answer inside the caller's own deadline (#1137, craft review R1).
+
+    A SUBCLASS, deliberately: every existing ``except ArtifactsClientError`` — the #552 done-check's
+    included — keeps catching a timeout exactly as it always did. It exists so ONE caller can tell
+    the two apart: the platform's best-effort settle-time save gives itself a deadline of a few
+    seconds (``ARTIFACT_SAVE_TIMEOUT_SECONDS``) and treats blowing it as "the KGS is degraded, skip
+    this save and let the member settle" — a different decision from an unreachable-or-refused KGS,
+    which is merely an inconclusive read."""
+
+
 #: The producer (#728 provenance) fields the KGS internal ingest route actually reads, and the same
 #: six ``GraphIngestConnector._producer_config`` forwards on the tool path. A caller's stamp is
 #: FILTERED through this tuple rather than forwarded verbatim, so a stray key (e.g. the engine's own
@@ -34,6 +45,16 @@ _PRODUCER_WIRE_FIELDS = (
     "team_id",
     "ordinal",
 )
+
+
+def _timeout_arg(timeout: float | None) -> Any:
+    """Translate an OPTIONAL per-call deadline into what httpx wants.
+
+    httpx reads a literal ``timeout=None`` as "wait forever", not as "use the client default" — the
+    opposite of what a ``float | None`` parameter reads like — so ``None`` becomes the library's own
+    ``USE_CLIENT_DEFAULT`` sentinel here. Typed ``Any`` because that sentinel's class is private to
+    httpx and not exported."""
+    return httpx.USE_CLIENT_DEFAULT if timeout is None else timeout
 
 
 class ArtifactsClient:
@@ -61,6 +82,7 @@ class ArtifactsClient:
         *,
         team_run_id: uuid.UUID | str | None = None,
         member_role: str | None = None,
+        timeout: float | None = None,  # noqa: ASYNC109 — forwarded to httpx, not enforced here
     ) -> list[dict[str, Any]]:
         """The artifacts landed on ``graph_id`` in the CALLER's organisation (KGS is org-scoped by
         the downstream headers). A 404 — the graph does not exist OR belongs to another org — is an
@@ -70,14 +92,24 @@ class ArtifactsClient:
         #1137: ``team_run_id``/``member_role`` narrow the listing to one run's one member — the
         single read the platform's settle-time autosave duplicate guard makes. Both are OPTIONAL and
         are omitted from the query entirely when not given, so the #552 done-check's request is
-        byte-for-byte what it always was (never a literal ``team_run_id=None``)."""
+        byte-for-byte what it always was (never a literal ``team_run_id=None``).
+
+        ``timeout`` overrides this client's own default for THIS call only (the same per-call
+        override ``HarnessClient.cancel`` takes). Omitted ⇒ the client default, so the #552
+        done-check's read is unchanged; given ⇒ blowing it raises ``ArtifactsClientTimeout``."""
         params = {"graph_id": str(graph_id)}
         if team_run_id is not None:
             params["team_run_id"] = str(team_run_id)
         if member_role is not None:
             params["member_role"] = member_role
         try:
-            resp = await self._client.get("/v1/artifacts", params=params)
+            resp = await self._client.get(
+                "/v1/artifacts", params=params, timeout=_timeout_arg(timeout)
+            )
+        except httpx.TimeoutException as exc:  # the caller's own deadline — distinguishable
+            raise ArtifactsClientTimeout(
+                f"knowledge-graph-service timed out: {type(exc).__name__}"
+            ) from exc
         except httpx.HTTPError as exc:  # KGS unreachable — inconclusive
             raise ArtifactsClientError(
                 f"knowledge-graph-service unreachable: {type(exc).__name__}"
@@ -96,6 +128,7 @@ class ArtifactsClient:
         content: str,
         source_type: str = "text",
         producer: dict[str, Any] | None = None,
+        timeout: float | None = None,  # noqa: ASYNC109 — forwarded to httpx, not enforced here
     ) -> dict[str, Any]:
         """Send one document to the KGS's internal ingest route and return the enqueued job.
 
@@ -112,7 +145,11 @@ class ArtifactsClient:
 
         Unlike ``list_artifacts``' 404-is-empty READING, any non-2xx here is a genuine write failure
         and always raises ``ArtifactsClientError``. The upstream response body (which can carry
-        another tenant's identifiers) is never echoed into the message."""
+        another tenant's identifiers) is never echoed into the message.
+
+        ``timeout`` bounds THIS call only, as on ``list_artifacts``. A blown deadline raises
+        ``ArtifactsClientTimeout`` and says nothing about whether the KGS eventually enqueued the
+        job — the caller decides what an unknown outcome means for it."""
         body: dict[str, Any] = {
             "graph_id": str(graph_id),
             "content": content,
@@ -123,7 +160,13 @@ class ArtifactsClient:
             if value is not None:
                 body[key] = value
         try:
-            resp = await self._client.post("/internal/v1/ingest", json=body)
+            resp = await self._client.post(
+                "/internal/v1/ingest", json=body, timeout=_timeout_arg(timeout)
+            )
+        except httpx.TimeoutException as exc:  # the caller's own deadline — outcome UNKNOWN
+            raise ArtifactsClientTimeout(
+                f"knowledge-graph-service timed out: {type(exc).__name__}"
+            ) from exc
         except httpx.HTTPError as exc:  # KGS unreachable — the write did not happen
             raise ArtifactsClientError(
                 f"knowledge-graph-service unreachable: {type(exc).__name__}"
