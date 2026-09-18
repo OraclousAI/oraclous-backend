@@ -47,6 +47,7 @@ from oraclous_ohm.sites import InvalidSiteError, normalise_sites
 from oraclous_substrate import ProvenanceCollector, ProvenanceRecord, hash_payload
 
 from oraclous_execution_engine_service.core.config import (
+    ARTIFACT_SAVE_TIMEOUT_SECONDS,
     HARNESS_CANCEL_TIMEOUT_SECONDS,
     HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS,
 )
@@ -55,6 +56,11 @@ from oraclous_execution_engine_service.domain import verdict_consumption as vc
 from oraclous_execution_engine_service.domain.answer_roles import sink_roles
 from oraclous_execution_engine_service.domain.app_answers import ANSWERS_KEY, parse_answers
 from oraclous_execution_engine_service.domain.app_form import SITE_RESTRICTION_KEY
+from oraclous_execution_engine_service.domain.member_artifact import (
+    build_document,
+    should_autosave,
+    should_skip_as_duplicate,
+)
 from oraclous_execution_engine_service.domain.outcome_blockers import (
     OutcomeBlocker,
     derive_outcome_blockers,
@@ -73,6 +79,7 @@ from oraclous_execution_engine_service.repositories.team_run_repository import T
 from oraclous_execution_engine_service.services.artifacts_client import (
     ArtifactsClient,
     ArtifactsClientError,
+    ArtifactsClientTimeout,
 )
 from oraclous_execution_engine_service.services.evaluate_client import (
     EvaluateClient,
@@ -85,6 +92,7 @@ from oraclous_execution_engine_service.services.registry_client import (
     RegistryClientError,
 )
 from oraclous_execution_engine_service.services.team_run import (
+    _declared_output_keys,
     make_loop_coordinator,
     make_recalibration_coordinator,
     run_team_hybrid,
@@ -1028,6 +1036,11 @@ class TeamRunService:
         # #1072: same posture as `harness_member_call_timeout` above — resolved once at the wiring
         # boundary (tasks/run_tasks.py) and threaded down explicitly to the cancel-on-timeout call.
         harness_cancel_timeout: float = HARNESS_CANCEL_TIMEOUT_SECONDS,
+        # #1137 (craft review R1): the per-call deadline on the platform's own settle-time
+        # member-artifact save. Same posture again — resolved once at the wiring boundary, threaded
+        # down explicitly. Small by design: this save sits inside the checkpoint the orchestrator
+        # awaits, and was ruled to never delay a settled member.
+        artifact_save_timeout: float = ARTIFACT_SAVE_TIMEOUT_SECONDS,
     ) -> None:
         # The drive runs on the WORKER (like jobs/round-tables): the request path (create/advance)
         # needs `enqueue` (hand the QUEUED run to the broker) but NOT a harness; the worker `drive`
@@ -1055,6 +1068,7 @@ class TeamRunService:
         self._registry = registry
         self._harness_member_call_timeout = harness_member_call_timeout
         self._harness_cancel_timeout = harness_cancel_timeout
+        self._artifact_save_timeout = artifact_save_timeout
 
     def _org(self, principal: Principal) -> uuid.UUID:
         if principal.organisation_id is None:  # fail-closed tenancy (ADR-006)
@@ -2282,6 +2296,218 @@ class TeamRunService:
             self._enqueue(team_run_id, org, principal.principal_id)
         return claimed  # QUEUED — the worker re-drives the failed+blocked members
 
+    async def _autosave_member_artifact(
+        self,
+        *,
+        org: uuid.UUID,
+        row: EngineTeamRun,
+        team: OHMManifest,
+        role: str,
+        status: str,
+        payload: Any,
+        execution_id: str | None,
+        output_hash: str | None,
+    ) -> None:
+        """#1137: the PLATFORM saves this settled member's declared deliverable onto the run's
+        graph, rather than trusting the model to have remembered to call its save tool.
+
+        Validation Desk's decision brief was lost on 5 of 5 runs: the member answered, the answer
+        was stored, and nothing put it on the graph, because the only writer was a ``graph-ingest``
+        tool call the model chose (or did not choose) to make. A bound tool is a menu, not an
+        intent. So the trigger here reads what the engine ALREADY knows at settle — the run is
+        graph-bound, the member settled with a real result, and it delivered every output key it
+        declared — and never the presence of a save tool.
+
+        Three calls, in order: the ``should_autosave`` predicate; ONE artifact listing for this run
+        and this member role, which ``should_skip_as_duplicate`` reads (so a document the model's
+        own tool call already landed, or the platform's own earlier write, is not duplicated); and
+        the send. A listing that FAILS collapses to ``None``, which writes anyway — ruled on #1137,
+        a duplicate document is recoverable while a lost deliverable is the defect being fixed.
+
+        LIMITS, documented rather than silent:
+
+        * a FAN-OUT member is skipped. Its sub-runs share one role and the per-item ``ordinal``
+          that would tell their documents apart is not recoverable at settle (#1015).
+        * a RE-DRIVE that settles the same member again while an earlier document exists stays
+          suppressed by the duplicate guard: the graph keeps the FIRST drive's document, not the
+          newest. Keying on content hash instead cannot fix this by itself — the tool path writes
+          the model's prose and this path writes canonical JSON, so the two never hash-match.
+        * a SAME-DRIVE re-settle has the same outcome, and is the more common case of the two —
+          OWED FOLLOW-UP, not fixed here. A member can settle more than once inside ONE drive: a
+          loop member that settles ``partial`` in an early round and ``succeeded`` with a better
+          answer in a later one, or a recalibration ``re-scope-member`` retry. The guard sees the
+          first round's document, suppresses the second, and the graph keeps the WEAKER answer
+          while the final, correct one is the one dropped. Only the cross-drive case above was
+          ruled on #1137. Fixing it properly means comparing what would be written against the
+          existing row's own content — the guard would have to stop being "any non-failed row
+          suppresses" — and the merged tests pin exactly that semantics
+          (``test_member_artifact_duplicate_guard.py``), so it needs a tests change first and
+          cannot be folded in here without editing tests to make code pass.
+
+        Best-effort, unconditionally: every failure — an unreachable KGS, a rejected ingest, a
+        malformed member — is logged and swallowed. This runs after the member's result is already
+        durable, and a graph write must never be able to take that away.
+
+        BOUNDED, equally unconditionally (craft review R1). This sits inside ``_checkpoint``, which
+        the orchestrator awaits before the run can advance, so the ruled "never delays a settled
+        member" is a real latency budget, not a figure of speech: both calls carry
+        ``artifact_save_timeout`` (a few seconds, ``ENGINE_ARTIFACT_SAVE_TIMEOUT_SECONDS``) instead
+        of the client-wide 30s default, and a blown deadline is a logged skip, never an error. A
+        listing that times out abandons the save outright, so a degraded KGS costs ONE deadline in
+        the common case and two in the worst — against the ~60s two 30s calls could have cost.
+
+        NOT detached into a background task, deliberately, even though that would cost the
+        checkpoint nothing: this runs inside a Celery worker task that closes its event loop and
+        its HTTP clients when the drive returns, so a detached save would be cancelled mid-flight
+        on every normal shutdown and lose the very deliverable this issue exists to stop losing. A
+        bounded await is a worse tail latency and a write that actually happens.
+
+        COVERAGE, OWED (quality review R1). The pure pieces this method composes are thoroughly
+        unit-tested; this method's OWN branches are not, because no existing suite constructs the
+        service with a non-``None`` artifacts client, so today every test of it exits at the first
+        line. Owed, as a fast-follow with a ``[tests]`` PR first: member-not-found, a listing that
+        errors (writes anyway) versus one that times out (skips), the duplicate skip AT THIS LAYER
+        rather than only in the predicate, a failing ingest and the ``failed`` provenance it emits,
+        and a settle with no ``execution_id``. Owed alongside them: a live case for a member that
+        DOES call its own save tool, which is the one regression today's e2e structurally cannot
+        catch — its member has no tools, by design, so it can never produce the prior document the
+        duplicate guard exists to notice."""
+        graph_id = row.graph_id
+        if self._artifacts is None or graph_id is None:
+            return
+        try:
+            member = next((m for m in team.members if m.role == role), None)
+            if member is None:  # a condensed loop node or a role not in this manifest
+                return
+            declared_keys = _declared_output_keys(member)
+            if not should_autosave(
+                graph_id=graph_id,
+                status=status,
+                payload=payload if isinstance(payload, dict) else None,
+                declared_keys=declared_keys,
+                is_fan_out=member.fan_out is not None,
+            ):
+                return
+            # the ONE read the guard makes. ArtifactsClientError -> None (inconclusive), which is
+            # deliberately NOT the same as [] (listed, found nothing): only the latter is evidence.
+            existing: list[dict[str, Any]] | None
+            try:
+                existing = await self._artifacts.list_artifacts(
+                    graph_id,
+                    team_run_id=row.id,
+                    member_role=role,
+                    timeout=self._artifact_save_timeout,
+                )
+            except ArtifactsClientTimeout:
+                # the DEADLINE, not an error: a KGS too slow to answer a one-row listing is too
+                # slow to accept the ingest that follows, and this member is already settled and
+                # waiting on us. Give up the whole save here so the degraded case costs ONE
+                # deadline rather than two. Logged, never raised, never provenance: nothing was
+                # attempted, so there is no write outcome to record.
+                logger.warning(
+                    "member artifact save skipped, duplicate check timed out after %ss: "
+                    "team_run_id=%s member=%s",
+                    self._artifact_save_timeout,
+                    row.id,
+                    role,
+                )
+                return
+            except ArtifactsClientError:
+                logger.warning(
+                    "member artifact duplicate check inconclusive, writing anyway: "
+                    "team_run_id=%s member=%s",
+                    row.id,
+                    role,
+                )
+                existing = None
+            if should_skip_as_duplicate(existing):
+                return
+            # the same stamp ``team_run.py::_producer_ref`` mints for the tool path, with the
+            # dispatch's execution id in place of its ``attempt_id`` — the harness stamps that same
+            # execution id onto everything the member's own tool calls write, so both paths'
+            # documents correlate to one execution. No ``ordinal``: fan-out never reaches here.
+            producer: dict[str, Any] = {
+                "producer_kind": "team-member",
+                "member_role": role,
+                "team_run_id": str(row.id),
+                "team_id": str(team.metadata.id),
+            }
+            if execution_id is not None:
+                producer["execution_id"] = execution_id
+            document = build_document(
+                payload=payload, declared_keys=declared_keys, producer=producer
+            )
+            # §3.7: the platform's write is an invocation like any other, so it produces ONE
+            # provenance record — through the run's own collector, never a direct DB write.
+            # Emitted per ATTEMPTED write (both outcomes), not per settle: the paths above that
+            # decide not to write produce nothing, so a reader counting `saved` counts documents.
+            # `output_hash` is the SETTLE's hash (the same value the member's own
+            # `engine.team_run.member` record carries), which is what ties the document back to the
+            # exact result it was built from; the ingest job's own content hash is the KGS's to
+            # record. The member's identity stays structured in `context`, never concatenated into
+            # `outcome` (24 August ruling §3). `_emit_best_effort`, not `_emit`: this is inside a
+            # hook the orchestrator invokes under `contextlib.suppress`, where the fail-closed
+            # sibling's CAS would fail a perfectly healthy run (#1027).
+            try:
+                await self._artifacts.ingest(
+                    graph_id,
+                    content=document["content"],
+                    source_type=document["source_type"],
+                    producer=document["producer"],
+                    timeout=self._artifact_save_timeout,
+                )
+            except ArtifactsClientTimeout:
+                # the deadline again — a clean give-up, not an error path. The record is `failed`
+                # like any other unconfirmed write: the outcome is genuinely UNKNOWN (the KGS may
+                # yet enqueue the job), and a save the platform cannot confirm must never count as
+                # one, so a reader counting `saved` still counts documents it can trust. Warning,
+                # not `logger.exception`: a slow upstream is an operational condition, not a defect
+                # in this code, and it must not read as one in the error log.
+                await self._emit_best_effort(
+                    org,
+                    row.user_id,
+                    row.id,
+                    "engine.team_run.artifact",
+                    "failed",
+                    context={"member": role},
+                    output_hash=output_hash,
+                )
+                logger.warning(
+                    "member artifact save timed out after %ss (outcome unknown): "
+                    "team_run_id=%s member=%s",
+                    self._artifact_save_timeout,
+                    row.id,
+                    role,
+                )
+                return
+            except Exception:
+                await self._emit_best_effort(
+                    org,
+                    row.user_id,
+                    row.id,
+                    "engine.team_run.artifact",
+                    "failed",
+                    context={"member": role},
+                    output_hash=output_hash,
+                )
+                raise
+            await self._emit_best_effort(
+                org,
+                row.user_id,
+                row.id,
+                "engine.team_run.artifact",
+                "saved",
+                context={"member": role},
+                output_hash=output_hash,
+            )
+        except Exception:  # noqa: BLE001 — never un-settle a member over a graph write
+            logger.exception(
+                "platform member-artifact save failed (best-effort): team_run_id=%s member=%s",
+                row.id,
+                role,
+            )
+            return
+
     async def _drive(
         self,
         row: EngineTeamRun,
@@ -2333,6 +2559,19 @@ class TeamRunService:
             if execution_id not in child_roles:
                 child_ids.append(execution_id)
             child_roles[execution_id] = role
+
+        # #1137: role -> the harness execution id its LATEST dispatch minted, recorded the instant
+        # the dispatch mints it (``on_member_execution``), before the harness is even called. This
+        # is what lets the platform's settle-time save stamp the SAME execution the member's own
+        # tool calls write under — ``child_roles`` above cannot serve: it is keyed the other way
+        # round (id -> role, so a re-dispatched role has two entries and no "latest"), and it is
+        # only filled from what the harness ANSWERED with, which a timed-out dispatch never does.
+        # Not persisted: it is needed only within the drive that minted it, and a resumed drive
+        # re-dispatches (and so re-mints) anything it still has to run.
+        member_execution_ids: dict[str, str] = {}
+
+        def _record_member_execution(role: str, execution_id: str) -> None:
+            member_execution_ids[role] = execution_id
 
         # #1108 ruling 2c: role -> curated failure token. Carry forward only the roles this drive
         # does NOT re-execute (the `completed` seed) — a role about to re-run starts clean, so a
@@ -2515,6 +2754,23 @@ class TeamRunService:
                     context={"member": role},
                     output_hash=output_hash,
                 )
+                # #1137: the platform's OWN save of this member's declared deliverable onto the
+                # team's graph — AFTER the durable checkpoint write above, so the results are
+                # already safe whatever this does, and keyed on the same once-per-DISTINCT-settle
+                # dedupe, so a later checkpoint carrying the settle forward never re-attempts it.
+                # Best-effort by construction: it never raises out, so a settled member is never
+                # un-settled by a graph write (§3.5's fail-closed direction here is "keep the
+                # result", not "keep the document").
+                await self._autosave_member_artifact(
+                    org=org,
+                    row=row,
+                    team=team,
+                    role=role,
+                    status=status,
+                    payload=results.get(role),
+                    execution_id=member_execution_ids.get(role),
+                    output_hash=output_hash,
+                )
 
         try:
             result = await run_team_hybrid(
@@ -2538,6 +2794,8 @@ class TeamRunService:
                 on_cost=cost_deltas.append,
                 on_member_failure=_record_member_failure,  # #1108: curated per-member token
                 on_member_attempts=_record_member_attempts,  # #1111: per-member attempt count
+                # #1137: (role, execution id) at mint, for the settle-time save's producer stamp
+                on_member_execution=_record_member_execution,
                 workspace_root=row.workspace_root,  # file-native (#518): the run's working tree
                 graph_id=row.graph_id,  # graph substrate (#524): the run's bound graph
                 inputs=row.inputs,  # #599: user-seeded state for a member's fan_out.over: "$.<key>"

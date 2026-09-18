@@ -459,6 +459,10 @@ async def _drive_team_run_async(run_id_s: str, org_id_s: str, user_id_s: str) ->
                 harness_member_call_timeout=settings.harness_member_call_timeout,
                 # #1072: same wiring-boundary read as the line above, for the cancel call.
                 harness_cancel_timeout=settings.harness_cancel_timeout_seconds,
+                # #1137: same wiring-boundary read, for the platform's own best-effort
+                # member-artifact save — which must never hold a settled member's checkpoint for
+                # the artifacts client's flat 30s default.
+                artifact_save_timeout=settings.artifact_save_timeout_seconds,
             )
             result = await service.drive(run_id, principal)
             return {"team_run_id": run_id_s, "state": result.state}
