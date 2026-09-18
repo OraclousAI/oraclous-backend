@@ -107,7 +107,11 @@ _banner() {  # $1 = label
 }
 
 MODE="${1:-}"
-[[ "$MODE" == "--up" ]] && { echo ">> bringing the stack up (fake LLM)…"; HARNESS_LLM_MODE=fake $COMPOSE up -d --wait; }
+# #1113: the app services sit behind the `services` compose profile. Without it `up` starts only
+# the infrastructure, exits 0, and the suite then runs against whatever app containers were
+# already up, so --up defaults the profile rather than trusting the caller's shell.
+[[ "$MODE" == "--up" ]] && { echo ">> bringing the stack up (fake LLM)…"
+  COMPOSE_PROFILES="${COMPOSE_PROFILES:-services}" HARNESS_LLM_MODE=fake $COMPOSE up -d --wait; }
 _require_gateway
 
 run_deterministic() {
