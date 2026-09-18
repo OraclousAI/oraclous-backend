@@ -923,19 +923,26 @@ def make_harness_dispatch(
                     on_child(str(cancelled_id), member.role)
                 if on_cost is not None:
                     on_cost(int(cancel_result.get("total_tokens") or 0))
-            elif on_cost is not None:
-                if member_max_tokens is not None:
-                    on_cost(member_max_tokens)
-                elif budget is not None and budget.max_tokens_total is not None:
-                    pool = _Pool(
-                        max_tokens=budget.max_tokens_total,
-                        max_sub_runs=None,
-                        max_usd=None,
-                        cost_so_far=cost_so_far,
-                    )
-                    headroom = pool.remaining_tokens()
-                    if headroom is not None:
-                        on_cost(headroom)
+            else:
+                # #1042: an UNCONFIRMED cancel must not erase the dispatch either — the harness
+                # has no id to echo back, but the one we minted before `harness.execute` is still
+                # the execution the run tree needs, so report THAT one (once) under the member's
+                # role. Otherwise the timed-out member's trace is unreachable through the gateway.
+                if on_child is not None:
+                    on_child(str(execution_id), member.role)
+                if on_cost is not None:
+                    if member_max_tokens is not None:
+                        on_cost(member_max_tokens)
+                    elif budget is not None and budget.max_tokens_total is not None:
+                        pool = _Pool(
+                            max_tokens=budget.max_tokens_total,
+                            max_sub_runs=None,
+                            max_usd=None,
+                            cost_so_far=cost_so_far,
+                        )
+                        headroom = pool.remaining_tokens()
+                        if headroom is not None:
+                            on_cost(headroom)
             raise HarnessClientError(
                 "timed out: it exceeded its wall-clock time limit "
                 f"({member_timeout:.0f}s) before the harness answered"
