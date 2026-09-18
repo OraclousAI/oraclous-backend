@@ -62,6 +62,40 @@ is timed out by the **reaper** (`engine.reap_stale` — the logic lands here; Ce
 in S5). `cancel` is best-effort on the record — it does not abort an in-flight harness run (the
 harness keeps running; the engine job reflects the cancel).
 
+## Team runs — the platform saves a member's deliverable (#1137)
+
+On a **graph-bound** team run, the engine writes each member's declared deliverable onto the run's
+knowledge graph **itself**, at the moment the member settles. It does not wait for the model to
+call a `graph-ingest` tool: a bound save tool is a menu, not an intent, and a member that simply
+never called it used to finish successfully with its answer stored on the run and nothing on the
+graph at all.
+
+A member is saved when **all** of these hold: the run is bound to a graph; the member settled
+`succeeded` or `partial` with a real result; its manifest **declared** required output keys
+(`outputs_schema.required`); and it actually delivered every key it declared. The document is the
+canonical JSON of exactly those declared keys, always ingested as **text** (never a structured
+type), with no title — the graph names it after the producing member's role. Its producer stamp
+carries the same `team_run_id`, `member_role`, `team_id` and harness `execution_id` the member's
+own tool-written documents carry, so both land under one execution.
+
+Before writing, the engine lists that run's artifacts for that member role once and **skips** if
+any row came back in a state other than `failed` — which covers both a model save that really
+landed and the engine's own earlier write. If that listing itself fails, the write proceeds: a
+duplicate document is recoverable, a lost deliverable is not.
+
+**Known limits, by design:**
+
+- a **fan-out** member is not saved. Its sub-runs share one role and the per-item ordinal that
+  would tell their documents apart is not recoverable at settle (#1015).
+- a **re-drive** that settles the same member again while an earlier document exists stays
+  suppressed by the duplicate check: the graph keeps the first drive's document, not the newest.
+
+The write is **best-effort and never fails a settled member** — an unreachable or rejecting
+knowledge-graph-service is logged (`platform member-artifact save failed (best-effort)`) and the
+run continues. Every attempted write emits an `engine.team_run.artifact` provenance event
+(`saved` / `failed`, carrying the settle's output hash), so what the platform wrote is auditable
+without reading the graph.
+
 ## Identity
 
 The gateway/dev/jwt seam mirrors the other services (ADR-018): in `gateway` mode the engine trusts the
