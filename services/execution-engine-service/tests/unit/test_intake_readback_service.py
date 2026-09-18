@@ -247,12 +247,16 @@ async def test_a_chatty_model_is_still_capped_at_three_questions() -> None:
 
 
 async def test_a_model_that_answers_in_prose_is_a_curated_refusal_not_a_500() -> None:
+    # #1151: an unparseable reader answer is a model-quality failure, not the caller's fault —
+    # 502 MODEL_ANSWER_UNUSABLE, never the 4xx family. error_type is unchanged.
     team_runs = _FakeTeamRuns()
     team_runs.reader_output = "Sure! Here is what I think you are building: a bakery app."
     svc, _ = _service(team_runs)
     with pytest.raises(_error()) as exc:
         await svc.readback(_principal(), idea=_GOOD_IDEA, models=_MODELS)
-    assert exc.value.status_code == 422
+    assert exc.value.status_code == 502
+    assert exc.value.error_code == "MODEL_ANSWER_UNUSABLE"
+    assert exc.value.error_type == "reader_output_unparseable"
 
 
 async def test_a_model_answer_in_the_wrong_shape_is_a_curated_refusal() -> None:
@@ -263,7 +267,22 @@ async def test_a_model_answer_in_the_wrong_shape_is_a_curated_refusal() -> None:
     svc, _ = _service(team_runs)
     with pytest.raises(_error()) as exc:
         await svc.readback(_principal(), idea=_GOOD_IDEA, models=_MODELS)
-    assert exc.value.status_code == 422
+    assert exc.value.status_code == 502
+    assert exc.value.error_code == "MODEL_ANSWER_UNUSABLE"
+    assert exc.value.error_type == "reader_output_unparseable"
+
+
+@pytest.mark.parametrize("output", ["", None], ids=["empty-string", "none"])
+async def test_an_empty_reader_answer_is_the_same_curated_refusal(output: str | None) -> None:
+    # #1151: an empty/None output hits the same "no output" branch of _peel as unparseable prose —
+    # same code, same error_type, pinned separately because it is a distinct branch.
+    svc, team_runs = _service()
+    settled = team_runs.seed("SUCCEEDED", {"reader": {"output": output}})
+    with pytest.raises(_error()) as exc:
+        await svc.readback(_principal(), readback_run_id=settled.id)
+    assert exc.value.status_code == 502
+    assert exc.value.error_code == "MODEL_ANSWER_UNUSABLE"
+    assert exc.value.error_type == "reader_output_unparseable"
 
 
 # ── the slow model ───────────────────────────────────────────────────────────
@@ -286,11 +305,28 @@ async def test_a_settled_run_is_collected_by_id() -> None:
 
 
 async def test_a_failed_run_is_a_curated_refusal() -> None:
+    # #1151: every non-SUCCEEDED terminal state (except the named credential rejection below) is
+    # 502 MODEL_ANSWER_UNUSABLE now — the model failed to answer, not the caller.
     svc, team_runs = _service()
     failed = team_runs.seed("FAILED")
     with pytest.raises(_error()) as exc:
         await svc.readback(_principal(), readback_run_id=failed.id)
-    assert exc.value.status_code == 422
+    assert exc.value.status_code == 502
+    assert exc.value.error_code == "MODEL_ANSWER_UNUSABLE"
+    assert exc.value.error_type == "readback_failed"
+
+
+@pytest.mark.parametrize("state", ["REJECTED", "COST_BUDGET"])
+async def test_the_other_terminal_states_are_the_same_curated_refusal(state: str) -> None:
+    # #1151: REJECTED and COST_BUDGET are terminal states too, and are not the credential-rejection
+    # special case, so they take the same generic 502 as a plain FAILED run.
+    svc, team_runs = _service()
+    settled = team_runs.seed(state)
+    with pytest.raises(_error()) as exc:
+        await svc.readback(_principal(), readback_run_id=settled.id)
+    assert exc.value.status_code == 502
+    assert exc.value.error_code == "MODEL_ANSWER_UNUSABLE"
+    assert exc.value.error_type == "readback_failed"
 
 
 # ── #1108: a provider-refused reader key is named, not just "failed" ────────
@@ -324,24 +360,44 @@ async def test_a_failed_run_without_a_matching_reader_token_keeps_the_generic_re
     failed = team_runs.seed("FAILED", member_error_codes=member_error_codes)
     with pytest.raises(_error()) as exc:
         await svc.readback(_principal(), readback_run_id=failed.id)
-    assert exc.value.status_code == 422
-    assert exc.value.error_code is None
+    # #1151: "generic" now means the 502 MODEL_ANSWER_UNUSABLE family, not a bare 422.
+    assert exc.value.status_code == 502
+    assert exc.value.error_code == "MODEL_ANSWER_UNUSABLE"
     assert exc.value.error_type == "readback_failed"
 
 
 async def test_a_run_id_that_is_not_a_read_back_run_is_refused_on_the_first_read() -> None:
     # Fail-closed on identity: a compiler run id must not buy a 25-second poll and a peel that
     # reads someone else's output as a restatement.
+    # Regression guard (#1151): this refusal is a caller mistake, not a model failure — it stays
+    # 422 with no error_code, unaffected by the MODEL_ANSWER_UNUSABLE ruling. Green on main.
     svc, team_runs = _service()
     imposter = team_runs.seed("RUNNING", manifest={"metadata": {"name": "harness-compiler"}})
     with pytest.raises(_error()) as exc:
         await svc.readback(_principal(), readback_run_id=imposter.id)
     assert exc.value.status_code == 422
+    assert exc.value.error_code is None
     assert exc.value.error_type == "not_a_readback_run"
 
 
 async def test_neither_an_idea_nor_a_run_id_is_a_refusal() -> None:
+    # Regression guard (#1151): a missing idea is a caller mistake, not a model failure — it stays
+    # 422 with no error_code, unaffected by the MODEL_ANSWER_UNUSABLE ruling. Green on main.
     svc, _ = _service()
     with pytest.raises(_error()) as exc:
         await svc.readback(_principal())
     assert exc.value.status_code == 422
+    assert exc.value.error_code is None
+    assert exc.value.error_type == "missing_idea"
+
+
+async def test_a_malformed_model_binding_is_refused_before_any_run() -> None:
+    # Regression guard (#1151): a malformed models[] entry is a caller mistake caught at the edge,
+    # not a model failure — it stays 422 with no error_code. Green on main.
+    svc, team_runs = _service()
+    with pytest.raises(_error()) as exc:
+        await svc.readback(_principal(), idea=_GOOD_IDEA, models=[{"not": "a binding"}])
+    assert exc.value.status_code == 422
+    assert exc.value.error_code is None
+    assert exc.value.error_type == "invalid_models"
+    assert team_runs.created == []
