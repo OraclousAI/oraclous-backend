@@ -28,10 +28,13 @@ from oraclous_execution_engine_service.schema.engine_schemas import (
     AppFormField,
     CreateTeamRunRequest,
     MemberOutcomeBlock,
+    RunGraphEdgeOut,
+    RunGraphNodeOut,
     SuggestedFormOut,
     SuggestedFormPendingOut,
     SuggestedFormRequest,
     TeamRunCost,
+    TeamRunGraphOut,
     TeamRunListItem,
     TeamRunListOut,
     TeamRunOut,
@@ -198,6 +201,40 @@ async def get_team_run_status(
             )
             for b in s.outcome_blockers
         ],
+    )
+
+
+@router.get("/team-runs/{team_run_id}/graph", response_model=TeamRunGraphOut)
+async def get_team_run_graph(
+    team_run_id: uuid.UUID, principal: PrincipalDep, service: TeamRunServiceDep
+) -> TeamRunGraphOut:
+    """The run as a graph of members, statuses, skip reasons and depends_on edges (#1119/#1154
+    §RUN-GRAPH). Reads through the SAME org-scoped ``service.get`` as ``/tree``/``/status``: a
+    cross-org id is a 404, never a leak. Pointers only — the domain derivation lives in
+    ``domain/run_graph.py``."""
+    try:
+        g = await service.graph(team_run_id, principal)
+    except TeamRunError as exc:
+        raise _http(exc) from exc
+    return TeamRunGraphOut(
+        team_run_id=g.team_run_id,
+        state=g.state,
+        nodes=[
+            RunGraphNodeOut(
+                role=n.role,
+                kind=n.kind,
+                status=n.status,
+                error_code=n.error_code,
+                skip_reason=n.skip_reason,
+                reason_role=n.reason_role,
+                input_from=n.input_from,
+                has_output=n.has_output,
+                loop=n.loop,
+                fan_out=n.fan_out,
+            )
+            for n in g.nodes
+        ],
+        edges=[RunGraphEdgeOut.model_validate({"from": e.from_, "to": e.to}) for e in g.edges],
     )
 
 

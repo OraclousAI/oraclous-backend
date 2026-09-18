@@ -70,6 +70,7 @@ from oraclous_execution_engine_service.domain.refresh import (
     compute_delta,
     parse_records,
 )
+from oraclous_execution_engine_service.domain.run_graph import RunGraph, derive_run_graph
 from oraclous_execution_engine_service.models.team_run import EngineTeamRun
 from oraclous_execution_engine_service.repositories.maintenance_repository import (
     EngineMaintenanceRepository,
@@ -1713,6 +1714,23 @@ class TeamRunService:
             outcome_blockers=derive_outcome_blockers(
                 results=row.results, member_status=row.member_status, manifest=row.manifest
             ),
+        )
+
+    async def graph(self, team_run_id: uuid.UUID, principal: Principal) -> RunGraph:
+        """The run as a graph of members + depends_on edges (#1119/#1154 §RUN-GRAPH). Reads
+        through the SAME request-path org-scoped ``get`` as ``/tree``/``/status`` (H3): a cross-org
+        id is a 404, never a leak. Returns the domain ``RunGraph`` — the route maps it to the wire
+        DTO, mirroring how ``status()`` returns a plain ``TeamRunStatus``."""
+        row = await self.get(team_run_id, principal)
+        return derive_run_graph(
+            manifest=row.manifest,
+            team_run_id=row.id,
+            state=row.state,
+            member_status=row.member_status,
+            member_error_codes=row.member_error_codes,
+            member_skip_reasons=row.member_skip_reasons,
+            results=row.results,
+            paused_at=row.paused_at,
         )
 
     async def list_for_org(

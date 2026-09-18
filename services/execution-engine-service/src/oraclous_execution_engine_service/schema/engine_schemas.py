@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from oraclous_execution_engine_service.domain.answer_roles import sink_roles
 from oraclous_execution_engine_service.domain.outcome_blockers import derive_outcome_blockers
+from oraclous_execution_engine_service.domain.run_graph import NodeKind, NodeStatus, SkipReason
 from oraclous_execution_engine_service.domain.schedule_cost import (
     DEFAULT_EXPECTED_INPUT_TOKENS,
     DEFAULT_EXPECTED_OUTPUT_TOKENS,
@@ -724,6 +725,45 @@ class TeamRunStatusOut(BaseModel):
     @classmethod
     def _coerce_empty(cls, v: Any) -> Any:
         return v if v is not None else {}
+
+
+class RunGraphNodeOut(BaseModel):
+    """One team member as the graph read reports it (#1119/#1154 §RUN-GRAPH). Every field is
+    always present, even when its value is ``null`` — mirrors the domain ``RunGraphNode`` field
+    for field; the route only maps, never derives (STR002/STR003)."""
+
+    role: str
+    kind: NodeKind
+    status: NodeStatus
+    error_code: str | None
+    skip_reason: SkipReason | None
+    reason_role: str | None
+    input_from: list[str]
+    has_output: bool
+    loop: int | None
+    fan_out: bool
+
+
+class RunGraphEdgeOut(BaseModel):
+    """A dependency edge. ``from`` is a Python keyword, so the model field is ``from_`` with a
+    ``from`` JSON alias (precedent: ``oraclous_eval.types.Verdict.passed``/``pass``) — callers read
+    ``{"from": ..., "to": ...}`` on the wire."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    from_: str = Field(alias="from")
+    to: str
+
+
+class TeamRunGraphOut(BaseModel):
+    """The run as a graph of members + depends_on edges (#1119/#1154 §RUN-GRAPH): a read-only
+    projection of the stored manifest snapshot and run fields, never a second source of truth.
+    Org-scoped: a cross-org id is a 404 (mirrors ``/tree``/``/status``)."""
+
+    team_run_id: uuid.UUID
+    state: str
+    nodes: list[RunGraphNodeOut]
+    edges: list[RunGraphEdgeOut]
 
 
 # ── #635 (C-1): team drafts + the compiler on-ramp ───────────────────────────────────────────────
