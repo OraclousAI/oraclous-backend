@@ -33,7 +33,8 @@
             "MODEL_NOT_CONNECTED",
             "IDEA_TOO_VAGUE",
             "MODEL_CREDENTIAL_REQUIRED",
-            "MODEL_CREDENTIAL_REJECTED"
+            "MODEL_CREDENTIAL_REJECTED",
+            "MODEL_ANSWER_UNUSABLE"
           ]
         },
         "message": {
