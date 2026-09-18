@@ -202,6 +202,29 @@ async def test_a_producer_that_omits_a_declared_key_fails_on_its_own_row() -> No
     assert res.status == "failed"
 
 
+async def test_a_producer_that_omits_a_declared_key_is_still_reported_to_on_child() -> None:
+    # #1042 ruling: on_child fires from the SAME dispatch that produced the execution id, before
+    # the orchestrator's contract check nulls the result — a contract failure must not erase the
+    # producer's execution id from the run's tree, the same "still findable" guarantee a
+    # harness-reported failure already gets.
+    harness = _ScriptedHarness({"reviewer": json.dumps({"notes": "no summary here"})})
+    team = _team(
+        [
+            _m("reviewer", outputs_schema={"required": ["summary"]}),
+            _m("publisher", depends_on=["reviewer"]),
+        ]
+    )
+    seen: dict[str, str] = {}
+    res = await run_team_harness(
+        team, harness, on_child=lambda exec_id, role: seen.update({exec_id: role})
+    )
+
+    assert res.member_status["reviewer"] == "failed"
+    assert res.member_status["publisher"] == "blocked"
+    assert "reviewer" in seen.values()  # the contract-failed producer's id is in the tree
+    assert "publisher" not in seen.values()  # blocked: never dispatched, no execution id to report
+
+
 async def test_a_member_is_told_which_keys_it_declared() -> None:
     """Enforcing a promise the member never heard is worse than not enforcing it.
 
