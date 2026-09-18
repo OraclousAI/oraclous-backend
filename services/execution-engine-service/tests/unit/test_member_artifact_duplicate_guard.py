@@ -17,9 +17,16 @@ Ruled on #1137 (design comment, qa-engineer):
 
 RED until ``domain/member_artifact.py`` and ``should_skip_as_duplicate`` exist; the seam is
 imported function-locally per ``.claude/rules/tests-seam-imports.md``.
+
+#1142 note: this predicate is UNCHANGED by #1142 — the platform now writes a richer content, but
+the guard that decides whether to write at all still reads only ``status``, never content. The
+two tests at the bottom of this file pin that explicitly; they pass today (regression guards, not
+RED), since #1142 never touches this file's subject.
 """
 
 from __future__ import annotations
+
+import json
 
 import pytest
 
@@ -75,3 +82,24 @@ def test_an_inconclusive_listing_writes_anyway() -> None:
     from oraclous_execution_engine_service.domain.member_artifact import should_skip_as_duplicate
 
     assert should_skip_as_duplicate(None) is False
+
+
+def test_a_non_failed_row_suppresses_even_when_its_content_is_the_old_two_key_shape() -> None:
+    """#1142 widens what a NEW write's content looks like (the member's whole final answer, not
+    only the declared keys), but a row from BEFORE that change — a two-key document from an
+    earlier drive or the model's own prior save — must still suppress on status alone. The guard
+    never compares content shape across the #1142 boundary."""
+    from oraclous_execution_engine_service.domain.member_artifact import should_skip_as_duplicate
+
+    rows = [{"status": "completed", "content": json.dumps({"posture": "x", "headline": "y"})}]
+    assert should_skip_as_duplicate(rows) is True
+
+
+def test_a_failed_row_never_suppresses_even_matching_the_new_richer_content() -> None:
+    """The guard's own ruling — content can never be the key, only status — holds even when a
+    failed row's content happens to already carry the richer #1142 shape byte-for-byte. A failed
+    attempt is not a save, whatever it failed to write."""
+    from oraclous_execution_engine_service.domain.member_artifact import should_skip_as_duplicate
+
+    rich_content = json.dumps({"posture": "x", "headline": "y", "rationale": "z", "sections": []})
+    assert should_skip_as_duplicate([{"status": "failed", "content": rich_content}]) is False
