@@ -61,6 +61,7 @@ from oraclous_execution_engine_service.core.config import (
 from oraclous_execution_engine_service.domain.answer_roles import sink_roles
 from oraclous_execution_engine_service.domain.app_answers import parse_answers
 from oraclous_execution_engine_service.domain.app_form import SITE_RESTRICTION_KEY
+
 # #1142: the member-answer peel moved DOWN to the domain layer when the platform's settle-time
 # save became its second caller — one reading of "what did the member say", not two. Bound to
 # its historical private name here so this module's call sites and their tests are unchanged.
@@ -575,8 +576,9 @@ def _first_json_object_text(text: str) -> str | None:
     """The source span of the first well-formed top-level JSON object in ``text`` — scanning
     forward from each ``{`` and decoding with ``json.JSONDecoder.raw_decode``, the same technique
     ``domain.member_answer.parse_member_object`` uses. Unlike a widest-match ``{.*}`` regex, this
-    never spans past the first object into a second, separate one that trails it (e.g. a ``driving_signals`` receipt
-    object following a member's team/answer JSON). ``None`` when no ``{`` in the text decodes."""
+    never spans past the first object into a second, separate one that trails it (e.g. a
+    ``driving_signals`` receipt object following a member's team/answer JSON). ``None`` when no
+    ``{`` in the text decodes."""
     decoder = json.JSONDecoder()
     start = text.find("{")
     while start != -1:

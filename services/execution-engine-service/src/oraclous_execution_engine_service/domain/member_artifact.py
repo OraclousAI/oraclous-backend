@@ -1,4 +1,4 @@
-"""The platform's own settle-time save of a member's deliverable (#1137, domain layer).
+"""The platform's own settle-time save of a member's deliverable (#1137/#1142, domain layer).
 
 Validation Desk's decision brief was lost on 5 of 5 runs: the ONLY thing that put a member's answer
 on the team graph was the model remembering to call ``graph-ingest`` at the end of its loop, and
@@ -28,6 +28,8 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from typing import Any
+
+from oraclous_execution_engine_service.domain.member_answer import parse_member_object
 
 #: A member SETTLED with a real answer. ``partial`` belongs here: #1015's live run ``6332197e``
 #: settled ``partial`` (an ``empty_retrieval`` note) carrying a genuine posture/headline — exactly
@@ -89,9 +91,28 @@ def build_document(
     deliverable missing a key it promised is the thing the trigger exists to refuse, and silently
     shipping a partial one to the graph would look like a successful save.
 
-    ``content`` is the JSON of EXACTLY the declared keys, in their declared order — nothing merged
-    in from the rest of the payload (``output``, ``steps``, ``driving_signals``, or any other key
-    the harness carried). A nested value round-trips intact, carried as text rather than structure.
+    ``content`` is the member's WHOLE final answer object (#1142), with the declared keys — already
+    lifted onto the payload, and guaranteed present by :func:`should_autosave` — unioned over it.
+    Run ``925dce0e`` settled a member whose answer carried nine keys and saved a 172-character
+    document holding the two its manifest happened to declare; the brief page renders straight off
+    this content, so its reasoning, sections and "what would change this" items never existed as far
+    as a reader was concerned. The answer is PEELED out of ``payload["output"]`` (the model's raw
+    reply: prose, a fence, or bare JSON) by the same
+    :func:`~oraclous_execution_engine_service.domain.member_answer.parse_member_object` the
+    orchestrator peels a producer's hand-off with, so a trailing ``driving_signals`` receipt object
+    is never the object that wins.
+
+    What the member said is saved; what the RUN said about it is not. The surrounding envelope —
+    ``status``, ``simulated``, ``fetched_urls``, ``unverified_links``, ``output``, ``steps``, the
+    harness's ``error_type``/``error_message`` — is the run's own bookkeeping, never the member's
+    answer, and is excluded by construction: only the peeled object and the declared keys are read.
+    Keys the member itself put INSIDE its answer object are its own content and are kept.
+
+    FLOOR: a member whose answer does not peel to a JSON object at all (no ``output``, prose with no
+    embedded object, a bare array) still saves exactly its declared keys — #1137's original
+    behaviour, so nothing regresses to writing nothing.
+
+    A nested value round-trips intact, carried as text rather than structure.
 
     ``title`` is deliberately ``None``: the KGS's ``derive_name`` then falls back to the producing
     member's role, which is the name a person looking at the graph wants.
@@ -102,8 +123,10 @@ def build_document(
     """
     ordered_keys = list(dict.fromkeys(declared_keys))
     declared = {key: payload[key] for key in ordered_keys}
+    answer = parse_member_object(payload.get("output"), declared_keys=ordered_keys)
+    content = {**answer, **declared}
     return {
-        "content": json.dumps(declared, ensure_ascii=False, indent=2),
+        "content": json.dumps(content, ensure_ascii=False, indent=2),
         "source_type": _SOURCE_TYPE,
         "title": None,
         "producer": producer,
@@ -116,8 +139,8 @@ def should_skip_as_duplicate(existing: list[dict[str, Any]] | None) -> bool:
     Any row whose ``status`` is not ``"failed"`` suppresses the write — that one signal covers both
     a model ``graph-ingest`` call that really landed and the platform's own earlier attempt. A
     content hash cannot be the key here: the tool writes the model's prose and the platform writes
-    canonical JSON of the declared keys, so a real prior save and this write never hash-match. Rows
-    that are ALL ``"failed"`` do not suppress it — a failed attempt is not a save.
+    canonical JSON of the member's answer object, so a real prior save and this write never
+    hash-match. Rows that are ALL ``"failed"`` do not suppress it — a failed attempt is not a save.
 
     ``None`` means the listing itself was INCONCLUSIVE (the read errored), and the write proceeds:
     ruled on #1137, a duplicate is recoverable while a lost deliverable is the defect being fixed.
