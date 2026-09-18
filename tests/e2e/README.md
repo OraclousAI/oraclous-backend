@@ -44,11 +44,14 @@ alone. A test that deliberately proves a gate is never "healed" into passing.
 
 ## Markers and legs
 
+Since #1144 no e2e leg runs on a pull request: every CI leg runs in `.github/workflows/e2e-nightly.yml`,
+once a night. Run the suite locally before opening a PR.
+
 | Marker | Leg | Harness | Runs in CI |
 | --- | --- | --- | --- |
-| `e2e` only | deterministic (`scripts/e2e.sh`) | `HARNESS_LLM_MODE=fake` | yes, every PR |
-| `oauth` | real dex provider (`--oauth`) | fake | yes, every PR |
-| `byom` + `byom_smoke` | the real-model **subset** (`--byom-smoke`) | `live`, the caller's OpenRouter key | every PR, with the `OPENROUTER_API_KEY` secret |
+| `e2e` only | deterministic (`scripts/e2e.sh`) | `HARNESS_LLM_MODE=fake` | nightly only (`e2e` job, #1144) |
+| `oauth` | real dex provider (`--oauth`) | fake | nightly only (`e2e` job, #1144) |
+| `byom` + `byom_smoke` | the real-model **subset** (`--byom-smoke`) | `live`, the caller's OpenRouter key | no longer in CI (#1144); local runs only, the nightly full leg covers it |
 | `byom` | the **full** real-LLM leg (`--byom`) | `live` | nightly only (`.github/workflows/e2e-nightly.yml`) |
 | `github` | real github.com (`--github`) | fake | no (human-gated) |
 
@@ -62,7 +65,7 @@ Verify the harness mode **inside the container** before trusting a run
 (`docker compose … exec harness-runtime-service env | grep HARNESS_LLM_MODE`): a deterministic
 run against a live model is the stale-environment trap CLAUDE.md warns about.
 
-## `byom_smoke` — the subset a pull request runs (#1012)
+## `byom_smoke` — the subset a pull request used to run (#1012; dropped from CI by #1144)
 
 The full `byom` leg is ~60 real team runs, several model rounds each: hours of wall clock. It was
 cancelled on the job time limit the first day the `OPENROUTER_API_KEY` secret existed, which told
