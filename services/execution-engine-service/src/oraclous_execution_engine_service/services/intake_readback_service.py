@@ -57,6 +57,12 @@ READER_ROLE = "reader"
 
 _TERMINAL_RUN_STATES = frozenset({"SUCCEEDED", "FAILED", "REJECTED", "COST_BUDGET"})
 
+#: #1151: the model failed to produce a usable answer — an unparseable reader output, or any
+#: terminal run state other than SUCCEEDED, except the named credential rejection (which stays
+#: MODEL_CREDENTIAL_REJECTED, 422 — the founder's own key, not the model's answer). 502, never the
+#: 4xx family: it is the model's failure, not the caller's.
+MODEL_ANSWER_UNUSABLE = "MODEL_ANSWER_UNUSABLE"
+
 
 class IntakeReadbackError(Exception):
     """A client-facing read-back failure.
@@ -254,7 +260,8 @@ class IntakeReadbackService:
                         )
                     raise IntakeReadbackError(
                         f"the read-back run did not succeed (state {run.state})",
-                        422,
+                        502,
+                        error_code=MODEL_ANSWER_UNUSABLE,
                         error_type="readback_failed",
                     )
                 return run
@@ -269,19 +276,23 @@ class IntakeReadbackService:
         """Peel the reader's JSON answer and hold it to the endpoint's contract.
 
         A model answering in prose, or inventing a third ``source``, is an expected outcome of
-        asking a model — a curated 422, never a 500.
+        asking a model — a curated 502, never a 500.
         """
         raw = (run.results or {}).get(READER_ROLE)
         text = raw.get("output") if isinstance(raw, dict) else raw
         if not isinstance(text, str) or not text.strip():
             raise IntakeReadbackError(
-                "the reader produced no output", 422, error_type="reader_output_unparseable"
+                "the reader produced no output",
+                502,
+                error_code=MODEL_ANSWER_UNUSABLE,
+                error_type="reader_output_unparseable",
             )
         parsed = first_json_object(text)
         if parsed is None:
             raise IntakeReadbackError(
                 "the reader emitted no usable JSON object",
-                422,
+                502,
+                error_code=MODEL_ANSWER_UNUSABLE,
                 error_type="reader_output_unparseable",
             )
         try:
@@ -289,7 +300,8 @@ class IntakeReadbackService:
         except ReadbackShapeError as exc:
             raise IntakeReadbackError(
                 "the reader's answer does not fit the read-back contract",
-                422,
+                502,
+                error_code=MODEL_ANSWER_UNUSABLE,
                 error_type="reader_output_unparseable",
             ) from exc
         return Readback(restatement=spans, questions=questions, readback_run_id=run_id)
