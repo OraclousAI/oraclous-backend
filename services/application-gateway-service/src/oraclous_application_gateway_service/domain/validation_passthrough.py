@@ -1,4 +1,4 @@
-"""Leak-safe upstream-4xx extraction (domain layer) — pure.
+"""Leak-safe upstream error extraction (domain layer) — pure.
 
 422 → VALIDATION_FAILED details, 409 → CREDENTIALS_REQUIRED token, and (#866) an ALLOW-LISTED
 error code on either.
@@ -53,6 +53,10 @@ _RELAYABLE_CODES: frozenset[str] = frozenset(
         ErrorCode.MODEL_CREDENTIAL_REQUIRED.value,
         # #1108: the provider refused the connected key — "replace the key", not "connect one".
         ErrorCode.MODEL_CREDENTIAL_REJECTED.value,
+        # #1151: the model answered, but the read-back could not use what came back — every
+        # unparseable reader output, and every non-SUCCEEDED terminal run other than a credential
+        # rejection (which keeps the code above). Its canonical status is 502, not 4xx.
+        ErrorCode.MODEL_ANSWER_UNUSABLE.value,
     }
 )
 _NON_TOKEN = re.compile(r"[^A-Z0-9_]")
@@ -201,12 +205,13 @@ def extract_needs_credential(raw: bytes) -> NeedsCredential | None:
 
 
 def extract_error_code(raw: bytes) -> str | None:
-    """Extract an ALLOW-LISTED upstream error code from a 4xx body, or None (#866).
+    """Extract an ALLOW-LISTED upstream error code from an error body, or None (#866).
 
     The engine's intake read-back names its refusal in ``error_code`` — at the top level, or one
     level down inside a FastAPI ``HTTPException(detail={...})`` wrapper, since it raises through
     that path. Matching is EXACT: no case-folding and no stripping, because a near-miss is a miss
-    and normalising would widen the hole for no benefit (the emitter writes the exact token).
+    and normalising would widen the hole for no benefit (the emitter writes the exact token). Not
+    only 4xx: #1151's ``MODEL_ANSWER_UNUSABLE`` carries the same shape on a 502.
 
     Returns the token itself, never a structure, so nothing else from the body can ride along.
     None → the proxy falls back to today's status-derived envelope, which is what every code
