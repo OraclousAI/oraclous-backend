@@ -89,6 +89,11 @@ duplicate document is recoverable, a lost deliverable is not.
   would tell their documents apart is not recoverable at settle (#1015).
 - a **re-drive** that settles the same member again while an earlier document exists stays
   suppressed by the duplicate check: the graph keeps the first drive's document, not the newest.
+- a member that settles **twice within one drive** — a loop member going `partial` then
+  `succeeded`, or a recalibration retry — is suppressed the same way, so the graph can keep the
+  earlier, weaker answer and drop the final one. Known, not yet fixed: the duplicate check would
+  have to compare the new document against the existing row's content rather than treat any
+  non-`failed` row as a save.
 
 The write is **best-effort and never fails a settled member** — an unreachable or rejecting
 knowledge-graph-service is logged (`platform member-artifact save failed (best-effort)`) and the

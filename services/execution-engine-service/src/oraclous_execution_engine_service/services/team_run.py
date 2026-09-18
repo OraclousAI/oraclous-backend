@@ -710,6 +710,11 @@ def make_harness_dispatch(
     # Distinct from ``on_child``, which surfaces the id the harness ANSWERED with: the platform's
     # settle-time save needs the id even on a dispatch the harness never answered cleanly, and it
     # needs it under the producing ROLE (``on_child``'s map is keyed the other way round).
+    # COVERAGE, OWED (quality review R1): no test calls this callback — that it fires BEFORE the
+    # harness call, that it still fires on a dispatch that later times out or is cancelled, and
+    # that a second attempt of the same role overwrites the map as the comment at the call site
+    # claims, are today proven only by a live run, so a reordering of `dispatch` could regress the
+    # correlation silently. Owed as a fast-follow with a `[tests]` PR first.
     on_member_execution: Callable[[str, str], None] | None = None,
     # #1072: the live pooled tally (mirrors `run_team`'s own `cost_so_far`) — read ONLY to charge
     # an unconfirmed cancel's fail-closed headroom; never mutated here (on_cost still owns writes).

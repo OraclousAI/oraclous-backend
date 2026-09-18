@@ -2332,6 +2332,17 @@ class TeamRunService:
           suppressed by the duplicate guard: the graph keeps the FIRST drive's document, not the
           newest. Keying on content hash instead cannot fix this by itself — the tool path writes
           the model's prose and this path writes canonical JSON, so the two never hash-match.
+        * a SAME-DRIVE re-settle has the same outcome, and is the more common case of the two —
+          OWED FOLLOW-UP, not fixed here. A member can settle more than once inside ONE drive: a
+          loop member that settles ``partial`` in an early round and ``succeeded`` with a better
+          answer in a later one, or a recalibration ``re-scope-member`` retry. The guard sees the
+          first round's document, suppresses the second, and the graph keeps the WEAKER answer
+          while the final, correct one is the one dropped. Only the cross-drive case above was
+          ruled on #1137. Fixing it properly means comparing what would be written against the
+          existing row's own content — the guard would have to stop being "any non-failed row
+          suppresses" — and the merged tests pin exactly that semantics
+          (``test_member_artifact_duplicate_guard.py``), so it needs a tests change first and
+          cannot be folded in here without editing tests to make code pass.
 
         Best-effort, unconditionally: every failure — an unreachable KGS, a rejected ingest, a
         malformed member — is logged and swallowed. This runs after the member's result is already
@@ -2349,7 +2360,18 @@ class TeamRunService:
         checkpoint nothing: this runs inside a Celery worker task that closes its event loop and
         its HTTP clients when the drive returns, so a detached save would be cancelled mid-flight
         on every normal shutdown and lose the very deliverable this issue exists to stop losing. A
-        bounded await is a worse tail latency and a write that actually happens."""
+        bounded await is a worse tail latency and a write that actually happens.
+
+        COVERAGE, OWED (quality review R1). The pure pieces this method composes are thoroughly
+        unit-tested; this method's OWN branches are not, because no existing suite constructs the
+        service with a non-``None`` artifacts client, so today every test of it exits at the first
+        line. Owed, as a fast-follow with a ``[tests]`` PR first: member-not-found, a listing that
+        errors (writes anyway) versus one that times out (skips), the duplicate skip AT THIS LAYER
+        rather than only in the predicate, a failing ingest and the ``failed`` provenance it emits,
+        and a settle with no ``execution_id``. Owed alongside them: a live case for a member that
+        DOES call its own save tool, which is the one regression today's e2e structurally cannot
+        catch — its member has no tools, by design, so it can never produce the prior document the
+        duplicate guard exists to notice."""
         graph_id = row.graph_id
         if self._artifacts is None or graph_id is None:
             return
