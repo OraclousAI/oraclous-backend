@@ -61,6 +61,13 @@ from oraclous_execution_engine_service.core.config import (
 from oraclous_execution_engine_service.domain.answer_roles import sink_roles
 from oraclous_execution_engine_service.domain.app_answers import parse_answers
 from oraclous_execution_engine_service.domain.app_form import SITE_RESTRICTION_KEY
+
+# #1142: the member-answer peel moved DOWN to the domain layer when the platform's settle-time
+# save became its second caller — one reading of "what did the member say", not two. Bound to
+# its historical private name here so this module's call sites and their tests are unchanged.
+from oraclous_execution_engine_service.domain.member_answer import (
+    parse_member_object as _parse_member_object,
+)
 from oraclous_execution_engine_service.domain.refresh import REFRESH_SEED_KEY
 from oraclous_execution_engine_service.services.harness_client import (
     HarnessClientError,
@@ -568,9 +575,10 @@ def _producer_ref(
 def _first_json_object_text(text: str) -> str | None:
     """The source span of the first well-formed top-level JSON object in ``text`` — scanning
     forward from each ``{`` and decoding with ``json.JSONDecoder.raw_decode``, the same technique
-    ``_parse_member_object`` below uses. Unlike a widest-match ``{.*}`` regex, this never spans past
-    the first object into a second, separate one that trails it (e.g. a ``driving_signals`` receipt
-    object following a member's team/answer JSON). ``None`` when no ``{`` in the text decodes."""
+    ``domain.member_answer.parse_member_object`` uses. Unlike a widest-match ``{.*}`` regex, this
+    never spans past the first object into a second, separate one that trails it (e.g. a
+    ``driving_signals`` receipt object following a member's team/answer JSON). ``None`` when no
+    ``{`` in the text decodes."""
     decoder = json.JSONDecoder()
     start = text.find("{")
     while start != -1:
@@ -655,43 +663,6 @@ def _declared_output_keys(member: OHMMember) -> list[str]:
     schema = member.outputs_schema or {}
     required = schema.get("required")
     return [k for k in required if isinstance(k, str)] if isinstance(required, list) else []
-
-
-def _parse_member_object(output: Any, *, declared_keys: list[str] | None = None) -> dict[str, Any]:
-    """The JSON object a member answered with, or {} when it did not answer with one.
-
-    A real model wraps its JSON in prose or a fence, so the object is PEELED rather than parsed
-    whole (the same reason ``validate_draft`` peels the drafter's reply). A real reply can also
-    carry MULTIPLE top-level JSON objects back to back (e.g. REVIEWER_PROMPT's team JSON followed
-    by a separate ``driving_signals`` receipt object) — a single greedy regex spanning first-`{` to
-    last-`}` would swallow both and fail to parse. So every well-formed top-level object in the text
-    is decoded in order; when ``declared_keys`` is given, the FIRST object carrying ALL of those
-    keys wins, otherwise the first object decoded wins. Never raises: a member that answered with
-    prose simply declared keys it did not deliver, and the orchestrator fails it on its own contract
-    with a readable reason — a parse crash would say nothing."""
-    if isinstance(output, dict):
-        return output
-    if not isinstance(output, str):
-        return {}
-    decoder = json.JSONDecoder()
-    first_object: dict[str, Any] | None = None
-    start = output.find("{")
-    while start != -1:
-        try:
-            parsed, end = decoder.raw_decode(output, start)
-        except json.JSONDecodeError as exc:
-            # Skip past wherever the decoder gave up, not one character at a time — a failed
-            # attempt has already ruled out this whole span, so re-walking it `{` by `{` is
-            # quadratic on brace-dense input.
-            start = output.find("{", max(start + 1, exc.pos))
-            continue
-        if isinstance(parsed, dict):
-            if first_object is None:
-                first_object = parsed
-            if declared_keys and all(key in parsed for key in declared_keys):
-                return parsed
-        start = output.find("{", end)
-    return first_object if first_object is not None else {}
 
 
 def make_harness_dispatch(
