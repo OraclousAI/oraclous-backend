@@ -141,6 +141,13 @@ class EngineTeamRun(BaseModel):
     member_attempt_counts: Mapped[dict[str, int]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default="{}"
     )
+    # ── per-member skip reasons (#1119/#1154; additive) ─────────────────────────────────────────
+    # role -> {"code", "role"} for a member the orchestrator skipped via ``run_if``
+    # (``condition_false``|``condition_source_missing``|``condition_error``). Written at
+    # checkpoint, settle and failure. server_default mirrors migration 0032.
+    member_skip_reasons: Mapped[dict[str, dict[str, str]]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
     # ── per-loop checkpoint (ADR-043 #552 PR-C; additive) ─────────────────────────────────────
     # "<loop_index>" -> {round, started_at, status} — set by the hybrid conductor so a loop resumes
     # at a ROUND boundary (the round counter + the ORIGINAL wall-clock start survive a HITL pause /
