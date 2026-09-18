@@ -1,6 +1,8 @@
 """Unit: the openapi contract pins ``ErrorDetail``'s stable-token allowlist and documents the new
 ``MODEL_CREDENTIAL_REJECTED`` code + the ``INVALID_GRAPH_ID`` detail token on their endpoints
-(#1108 rulings 6-7).
+(#1108 rulings 6-7); #1151 adds ``MODEL_ANSWER_UNUSABLE`` alongside it — the model answered, but
+the read-back could not use what came back (every unparseable read, every non-SUCCEEDED terminal
+other than a credential rejection).
 
 ``x-stable-issue-tokens`` is the LEAST-COMMITMENT list: only ``INVALID_GRAPH_ID`` is promised not
 to change shape; every other ``details[].issue`` value (READBACK_FAILED, READER_OUTPUT_UNPARSEABLE,
@@ -12,6 +14,11 @@ is asserted only as a loose, case-insensitive substring.
 RED until the [impl] PR (I6) adds ``x-stable-issue-tokens``, widens the ``issue`` description, adds
 ``MODEL_CREDENTIAL_REJECTED`` to the error-code enum, and documents both on their responses —
 ``openapi/v1.yaml`` is untouched by this [tests] PR.
+
+#1151 (I4) additionally: the error-code enum gains ``MODEL_ANSWER_UNUSABLE``; the read-back
+operation documents a ``502`` response carrying it (a new response, not yet present); and the
+read-back ``422`` description no longer claims reader/parse failures — those terminal states move
+to 502, so 422 is left to describe only the guards that genuinely never call the model.
 """
 
 from __future__ import annotations
@@ -78,3 +85,27 @@ def test_apps_runs_422_documents_invalid_graph_id() -> None:
     response = spec["paths"]["/v1/engine/apps/{app_id}/runs"]["post"]["responses"]["422"]
     resolved = _resolve(spec, response)
     assert "INVALID_GRAPH_ID" in resolved["description"], resolved
+
+
+def test_error_code_enum_lists_model_answer_unusable() -> None:
+    assert "MODEL_ANSWER_UNUSABLE" in _error_code_enum(_load_spec())
+
+
+def test_readback_502_documents_model_answer_unusable() -> None:
+    spec = _load_spec()
+    responses = spec["paths"]["/v1/engine/intake/readback"]["post"]["responses"]
+    assert "502" in responses, responses
+    resolved = _resolve(spec, responses["502"])
+    assert "MODEL_ANSWER_UNUSABLE" in resolved["description"], resolved
+
+
+def test_readback_422_no_longer_claims_reader_failures() -> None:
+    """The unparseable-read and non-SUCCEEDED-terminal cases move to 502 (#1151); 422 is left to
+    describe only the guards that never call the model (IDEA_TOO_VAGUE) and the credential refusal
+    (MODEL_CREDENTIAL_REJECTED), never an unparseable or failed reader run."""
+    spec = _load_spec()
+    response = spec["paths"]["/v1/engine/intake/readback"]["post"]["responses"]["422"]
+    resolved = _resolve(spec, response)
+    description = resolved["description"].lower()
+    for forbidden in ("unparseable", "failed reader", "reader run"):
+        assert forbidden not in description, resolved
