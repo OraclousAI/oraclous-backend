@@ -1,6 +1,8 @@
 ### Every deployed-stack e2e leg — nightly, never on a pull request (#1012, #1144).
 #
-# Two jobs, once a night off-peak, plus workflow_dispatch for an on-demand run:
+# One run a day covers the pull requests merged into main that day (#1144). The `merged-prs` job
+# lists them in the run summary; a scheduled run with no merge since the previous one is skipped.
+# A manual workflow_dispatch always runs. Two test jobs follow it:
 #   - `byom-full`: the full real-model leg, ~60 real team runs of several model rounds each.
 #   - `e2e`: the deterministic leg (fake harness) and the OAuth leg, moved here from ci.yml (#1144)
 #     so a pull request no longer pays for a full stack build.
@@ -11,7 +13,7 @@
 # one (a spent provider key, a free-model rate limit — OpenRouter caps free models at ~1000
 # requests/day per key, and one full pass is a large fraction of that). Read the step log before
 # filing; tests/e2e/README.md says which key each test brings.
-name: Nightly full real-model e2e
+name: Nightly e2e for the day's merged pull requests
 
 on:
   schedule:
@@ -25,11 +27,48 @@ concurrency:
   group: e2e-nightly
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+
 jobs:
+  # #1144: which pull requests does this run cover? Everything merged into main since the previous
+  # scheduled run started (GitHub delays cron by hours, so a fixed 24h window would drop or repeat
+  # some). No previous run: the last 24h.
+  merged-prs:
+    name: "Pull requests merged since the last nightly"
+    if: github.repository == 'OraclousAI/oraclous-backend'
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.list.outputs.run }}
+    steps:
+      - id: list
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          since=$(gh run list --workflow e2e-nightly.yml --event schedule --limit 2 \
+            --json databaseId,createdAt --jq "[.[] | select(.databaseId != ${{ github.run_id }})][0].createdAt // empty")
+          since=${since:-$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)}
+          prs=$(gh pr list --state merged --base main --limit 200 --search "merged:>=$since" \
+            --json number,title --jq '.[] | "- #\(.number) \(.title)"')
+          {
+            echo "### Pull requests merged into main since $since"
+            echo "${prs:-_none_}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$prs" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No merge since $since: skipping the e2e jobs."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
   byom-full:
     name: "Full BYOM real-LLM e2e through the gateway (no fakes; rules 3-5)"
-    # forks inherit the schedule but not the secret, where every run would be a pointless skip
-    if: github.repository == 'OraclousAI/oraclous-backend'
+    # forks never get here: `merged-prs` is limited to this repository (forks lack the secret)
+    needs: merged-prs
+    if: needs.merged-prs.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 330  # generous on purpose: ~60 real team runs; the hosted-runner ceiling is 360
     env:
@@ -104,7 +143,8 @@ jobs:
   # embedder. The real-model coverage is the `byom-full` job above (a superset of the old PR subset).
   e2e:
     name: "Deployed-stack e2e through the gateway (no fakes; rules 3-5)"
-    if: github.repository == 'OraclousAI/oraclous-backend'
+    needs: merged-prs
+    if: needs.merged-prs.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45  # building ~14 service images from scratch + the full stack is the long pole
     env:
