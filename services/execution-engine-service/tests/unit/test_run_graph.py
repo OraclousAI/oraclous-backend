@@ -480,6 +480,32 @@ def test_input_from_and_has_output() -> None:
     assert silent_dep.has_output is False
 
 
+def test_input_from_follows_depends_on_order_not_declaration_order() -> None:
+    # Two producing dependencies, declared first_declared -> second_declared, but the consumer
+    # lists them the other way round: input_from must follow the consumer's depends_on order.
+    depends_on = ["second_declared", "first_declared"]
+    manifest = _manifest(
+        [
+            _member("first_declared", depends_on=[]),
+            _member("second_declared", depends_on=[]),
+            _member("writer", depends_on=depends_on),
+        ]
+    )
+
+    graph = _derive(
+        manifest=manifest,
+        state="RUNNING",
+        member_status={
+            "first_declared": "succeeded",
+            "second_declared": "succeeded",
+            "writer": "running",
+        },
+        results={"first_declared": {"summary": "a"}, "second_declared": {"summary": "b"}},
+    )
+
+    assert _node(graph, "writer").input_from == depends_on
+
+
 # ── 14. loop / fan_out ────────────────────────────────────────────────────
 
 
