@@ -18,7 +18,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
-revision = "0032_team_run_member_skip_reasons"
+revision = "0032_team_run_skip_reasons"
 down_revision = "0031_team_run_member_attempts"
 branch_labels = None
 depends_on = None
