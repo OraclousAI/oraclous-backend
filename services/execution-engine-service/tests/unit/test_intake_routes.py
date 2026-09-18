@@ -262,3 +262,80 @@ async def test_a_provider_refused_reader_key_names_its_code_and_leaks_nothing() 
     assert sentinel_key not in resp.text
     assert sentinel_credential_id not in resp.text
     assert sentinel_message not in resp.text
+
+
+async def test_an_unusable_model_answer_is_a_502_naming_its_code_and_leaks_nothing() -> None:
+    # #1151: a SUCCEEDED run whose reader output cannot be parsed into a readback is a model
+    # failure, not the caller's — 502 MODEL_ANSWER_UNUSABLE. Same real-service wiring as the
+    # credential-rejection test above: the route must never echo the model's own prose into the
+    # body (CLAUDE.md §11 — no customer/model output verbatim in an error response).
+    from oraclous_execution_engine_service.services.intake_readback_service import (
+        IntakeReadbackService,
+    )
+
+    sentinel_output = "SENTINEL-PROSE-9f2c: sure, here is what I think you are building."
+
+    class _SucceededProseRun:
+        def __init__(self) -> None:
+            self.id = uuid.uuid4()
+            self.state = "SUCCEEDED"
+            self.results = {"reader": {"output": sentinel_output}}
+            self.manifest = {"metadata": {"name": "intake-reader"}}
+            self.member_error_codes: dict[str, str] = {}
+
+    class _FakeTeamRuns:
+        def __init__(self, row: _SucceededProseRun) -> None:
+            self._row = row
+
+        async def get(self, run_id: uuid.UUID, principal: Principal) -> _SucceededProseRun:
+            return self._row
+
+    row = _SucceededProseRun()
+    service = IntakeReadbackService(
+        team_runs=_FakeTeamRuns(row),  # type: ignore[arg-type] — duck-typed seam
+        readback_poll_seconds=0.2,
+        readback_poll_interval_seconds=0.01,
+    )
+    async with _client(service) as c:
+        resp = await c.post("/v1/engine/intake/readback", json={"readback_run_id": str(row.id)})
+    assert resp.status_code == 502, resp.text
+    assert resp.json()["detail"] == {"error_code": "MODEL_ANSWER_UNUSABLE"}
+    assert sentinel_output not in resp.text
+
+
+async def test_a_failed_run_is_a_502_naming_its_code_and_leaks_nothing() -> None:
+    # #1151: a plain FAILED run (no credential-rejection token) is now 502 MODEL_ANSWER_UNUSABLE
+    # too — and the run's own error_message must never reach the founder's browser.
+    from oraclous_execution_engine_service.services.intake_readback_service import (
+        IntakeReadbackService,
+    )
+
+    sentinel_message = "SENTINEL-ERROR-77ab: upstream provider exploded"
+
+    class _FailedRun:
+        def __init__(self) -> None:
+            self.id = uuid.uuid4()
+            self.state = "FAILED"
+            self.results = None
+            self.manifest = {"metadata": {"name": "intake-reader"}}
+            self.member_error_codes: dict[str, str] = {}
+            self.error_message = sentinel_message
+
+    class _FakeTeamRuns:
+        def __init__(self, row: _FailedRun) -> None:
+            self._row = row
+
+        async def get(self, run_id: uuid.UUID, principal: Principal) -> _FailedRun:
+            return self._row
+
+    row = _FailedRun()
+    service = IntakeReadbackService(
+        team_runs=_FakeTeamRuns(row),  # type: ignore[arg-type] — duck-typed seam
+        readback_poll_seconds=0.2,
+        readback_poll_interval_seconds=0.01,
+    )
+    async with _client(service) as c:
+        resp = await c.post("/v1/engine/intake/readback", json={"readback_run_id": str(row.id)})
+    assert resp.status_code == 502, resp.text
+    assert resp.json()["detail"] == {"error_code": "MODEL_ANSWER_UNUSABLE"}
+    assert sentinel_message not in resp.text
