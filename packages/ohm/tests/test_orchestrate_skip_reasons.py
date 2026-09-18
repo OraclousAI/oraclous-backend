@@ -315,7 +315,7 @@ async def test_predicate_skip_records_no_reason() -> None:
 # ── (9) the hybrid skeleton seam (run_team's own `members=` override) forwards on_skip too ───────
 
 
-async def test_hybrid_threads_on_skip_to_the_skeleton() -> None:
+async def test_run_teams_skeleton_seam_threads_on_skip_too() -> None:
     # run_team's docstring: "the hybrid driver (ADR-043 #552) passes the acyclic skeleton + one
     # condensed node per loop, so run_team schedules the loops at their topological position" via
     # the `members=` override. `on_skip` must be forwarded through that exact call the same way
