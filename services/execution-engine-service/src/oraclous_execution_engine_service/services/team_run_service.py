@@ -2595,6 +2595,17 @@ class TeamRunService:
         def _record_member_attempts(role: str, attempts: int) -> None:
             member_attempt_counts[role] = attempts
 
+        # #1119/#1154: role -> {"code","role"}, carried forward only for roles this drive does NOT
+        # re-execute (the same rule as member_error_codes).
+        member_skip_reasons: dict[str, dict[str, str]] = {
+            role: reason
+            for role, reason in (row.member_skip_reasons or {}).items()
+            if role in seeded
+        }
+
+        def _record_skip(role: str, code: str, tested_role: str) -> None:
+            member_skip_reasons[role] = {"code": code, "role": tested_role}
+
         # #828 items 1+2: the live per-member status (now including the provisional "running") +
         # timings, seeded from any prior (resumed) drive. #832-style race: on_dispatch and the
         # settle checkpoint both write this row from concurrent members of a wide stage, so BOTH
@@ -2731,6 +2742,11 @@ class TeamRunService:
                         # `prior_cost + sum(cost_deltas)` off this same base, so writing a delta
                         # here would be counted twice across a resume.
                         cost_tokens=prior_cost + sum(cost_deltas),
+                        member_skip_reasons={
+                            r: v
+                            for r, v in member_skip_reasons.items()
+                            if live_status.get(r) == "skipped"
+                        },
                     )
             # §3.7 (#826): one event per DISTINCT settle — never on a later checkpoint that merely
             # carries an unchanged settle forward, but a genuine re-settle of the same role (a loop
@@ -2812,6 +2828,7 @@ class TeamRunService:
                 ),
                 on_checkpoint=_checkpoint,  # #819: each settled member durable mid-drive
                 on_dispatch=_on_dispatch,  # #828: "running", written before the member runs
+                on_skip=_record_skip,  # #1119: role -> {"code","role"} when a run_if gate skips it
                 member_call_timeout=self._harness_member_call_timeout,
                 cancel_timeout=self._harness_cancel_timeout,
             )
@@ -2850,6 +2867,11 @@ class TeamRunService:
                     member_status=backfilled,
                     member_error_codes=dict(member_error_codes),  # #1108
                     member_attempt_counts=dict(member_attempt_counts),  # #1111
+                    member_skip_reasons={
+                        r: v
+                        for r, v in member_skip_reasons.items()
+                        if backfilled.get(r) == "skipped"
+                    },
                 )
             await self._accrue_schedule_cost(
                 row, org, sum(cost_deltas)
@@ -2947,6 +2969,7 @@ class TeamRunService:
                 member_status=member_status,  # ADR-042: per-member result (drives re-run target)
                 member_error_codes=dict(member_error_codes),  # #1108: role -> curated failure token
                 member_attempt_counts=dict(member_attempt_counts),  # #1111: role -> attempts
+                member_skip_reasons=dict(result.member_skip_reasons),  # #1119: role -> {code, role}
                 error_message=failed_summary,  # None unless a member failed/blocked
                 child_execution_ids=child_ids,  # the member executions that form this run's tree
                 cost_tokens=prior_cost + sum(cost_deltas),  # O4: the run's accumulated token cost

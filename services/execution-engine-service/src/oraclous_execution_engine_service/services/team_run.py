@@ -44,6 +44,7 @@ from oraclous_ohm.orchestrate import (
     DoneCheckFn,
     LoopCoordinateFn,
     LoopSeamResult,
+    OnSkipFn,
     RecalDirective,
     RecalibrateFn,
     TeamRunResult,
@@ -1085,6 +1086,7 @@ async def run_team_harness(
     graph_authoritative: bool = False,
     on_checkpoint: CheckpointFn | None = None,
     on_dispatch: DispatchAnnounceFn | None = None,
+    on_skip: OnSkipFn | None = None,
     member_call_timeout: float = HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS,
     cancel_timeout: float = HARNESS_CANCEL_TIMEOUT_SECONDS,
 ) -> TeamRunResult:
@@ -1095,7 +1097,8 @@ async def run_team_harness(
     ``trace_id``/``parent_execution_id``/``on_child`` thread + collect the run-tree (#471);
     ``on_cost`` accumulates the run's RAW token cost (#472); ``on_checkpoint`` (#819) makes each
     settled member durable mid-drive; ``on_dispatch`` (#828) fires the instant a member is admitted
-    to a dispatch slot, before it runs."""
+    to a dispatch slot, before it runs; ``on_skip`` (#1119) fires when a ``run_if`` gate skips a
+    member, before that member's checkpoint."""
     # team-scope blackboard (#513): the STABLE team identity is the team-manifest id — derived here
     # (not a separate binding) + threaded to every member so they share one team-scope memory.
     team_id = str(manifest.metadata.id)
@@ -1164,6 +1167,7 @@ async def run_team_harness(
         cost_so_far=pooled_cost,
         on_checkpoint=on_checkpoint,  # #819: per-member durability
         on_dispatch=on_dispatch,  # #828: fires before a member's dispatch runs
+        on_skip=on_skip,  # #1119: fires when a run_if gate skips a member
     )
 
 
@@ -1250,6 +1254,7 @@ async def run_team_hybrid(
     graph_authoritative: bool = False,
     on_checkpoint: CheckpointFn | None = None,
     on_dispatch: DispatchAnnounceFn | None = None,
+    on_skip: OnSkipFn | None = None,
     member_call_timeout: float = HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS,
     cancel_timeout: float = HARNESS_CANCEL_TIMEOUT_SECONDS,
 ) -> TeamRunResult:
@@ -1268,7 +1273,8 @@ async def run_team_hybrid(
 
     ``on_checkpoint`` (#819) is forwarded to BOTH sides — the skeleton on ``run_team`` and each
     loop's ``run_loop_seam`` — through ``_emit_checkpoint`` below, which is where the condensed
-    node is filtered out and the two sides' state is merged."""
+    node is filtered out and the two sides' state is merged. ``on_skip`` (#1119) is forwarded to
+    the skeleton's ``run_team`` only — ``run_loop_seam`` never evaluates ``run_if``."""
     loops = list(manifest.orchestration.loops) if manifest.orchestration else []
     if not loops:  # purely acyclic — the unchanged single-pass DAG path
         return await run_team_harness(
@@ -1292,6 +1298,7 @@ async def run_team_hybrid(
             graph_authoritative=graph_authoritative,
             on_checkpoint=on_checkpoint,  # #819: per-member durability
             on_dispatch=on_dispatch,  # #828: fires before a member's dispatch runs
+            on_skip=on_skip,  # #1119: fires when a run_if gate skips a member
             member_call_timeout=member_call_timeout,
             cancel_timeout=cancel_timeout,
         )
@@ -1476,6 +1483,7 @@ async def run_team_hybrid(
         cost_so_far=cost_so_far,  # #585: the pooled token gate binds the skeleton members too
         on_checkpoint=_skeleton_checkpoint,  # #819: durable per settled skeleton member
         on_dispatch=on_dispatch,  # #828: fires before a skeleton member's dispatch runs
+        on_skip=on_skip,  # #1119: fires when a run_if gate skips a skeleton member
     )
 
     # merge each loop's real-member results into the team result; the synthetic node is internal
