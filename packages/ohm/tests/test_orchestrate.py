@@ -397,3 +397,56 @@ async def test_guardrail_834_no_succeeded_with_empty_required_output_from_critic
     res = await run_team(_team([reviewer]), dispatch)
     assert res.status != "completed"  # THE GUARDRAIL: this terminal must never be "completed"
     assert res.status == "failed"
+
+
+# ── #1042 — a contract-failed member's trace is still announced; its consumers stay blocked ────
+#
+# solution-architect's ruling (2026-09-18): the failed member's step trace is not deleted — it is
+# stored on the member's own harness execution and reached via the child id `on_child` records. The
+# contract check (validate_payload against outputs_schema) runs AFTER `_announce_child` for a
+# single (non-fan-out) dispatch, so the id is always recorded before `results[role]` is nulled out.
+# These are regression guards, expected GREEN on main: they pin that ordering so a future change
+# cannot silently move the contract check ahead of the announce.
+
+
+async def test_a_contract_failed_member_still_reports_its_execution_to_on_child() -> None:
+    producer = OHMMember(
+        role="p", kind="agent", manifest_ref="org:x/p@1", outputs_schema={"required": ["summary"]}
+    )
+    exec_id = str(uuid.uuid4())
+    announced: list[tuple[str, str]] = []
+
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        # declares "summary" in its outputs_schema but never delivers it — a contract failure.
+        return {"id": exec_id, "output": "prose", "steps": [{"tool": "search", "status": "ok"}]}
+
+    def on_child(cid: str, role: str) -> None:
+        announced.append((cid, role))
+
+    res = await run_team(_team([producer]), dispatch, on_child=on_child)
+    assert announced == [(exec_id, "p")]  # the execution was announced BEFORE the contract check
+    assert res.results["p"] is None  # "delivered nothing" — unchanged by the announce
+    assert res.member_status["p"] == "failed"
+    assert res.member_errors["p"].startswith(
+        "member 'p' declared an output contract it did not deliver: "
+    )
+
+
+async def test_a_contract_failed_member_keeps_its_consumers_blocked() -> None:
+    producer = OHMMember(
+        role="p", kind="agent", manifest_ref="org:x/p@1", outputs_schema={"required": ["summary"]}
+    )
+    consumer = OHMMember(role="c", kind="agent", manifest_ref="org:x/c@1", depends_on=["p"])
+    dispatched: list[str] = []
+
+    async def dispatch(member: OHMMember, envs: list[HandoffEnvelope], item: Any) -> dict:
+        dispatched.append(member.role)
+        if member.role == "p":
+            return {"id": str(uuid.uuid4()), "output": "prose", "steps": [{"tool": "x"}]}
+        return {"out": member.role}
+
+    res = await run_team(_team([producer, consumer]), dispatch)
+    assert res.member_status["p"] == "failed"
+    assert res.member_status["c"] == "blocked"
+    assert "c" not in dispatched  # the consumer was never dispatched
+    assert res.results["c"] is None
