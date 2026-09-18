@@ -316,6 +316,7 @@ async def test_rerun_replaces_reasons_from_the_new_drive() -> None:
 
     assert result.member_status["b"] == "succeeded"
     assert result.member_skip_reasons == {}
+    assert repo.checkpoints[-1]["member_skip_reasons"] == {}
 
 
 # ── (4) a mid-drive death prunes the live map to roles still 'skipped' after the backfill ────────
@@ -373,7 +374,10 @@ async def test_failed_drive_keeps_only_skipped_roles_reasons(monkeypatch: Any) -
         SoftTimeLimitExceeded(),
         results={"researcher": {"output": "flat"}},
         member_status={"researcher": "succeeded", "target": "skipped", "other": "running"},
-        skip_calls=[("target", "condition_false", "researcher")],
+        skip_calls=[
+            ("target", "condition_false", "researcher"),
+            ("other", "condition_false", "researcher"),
+        ],
     )
 
     row = await _run(
@@ -407,3 +411,4 @@ def test_engine_team_run_model_declares_a_member_skip_reasons_column() -> None:
     column = EngineTeamRun.__table__.columns["member_skip_reasons"]
     assert isinstance(column.type, JSONB)
     assert column.nullable is False
+    assert column.server_default is not None
