@@ -60,6 +60,10 @@ EXPECTED_CODES = {
     # this means "replace the one you connected" — a founder needs to tell those apart to know
     # which screen fixes it.
     "MODEL_CREDENTIAL_REJECTED",
+    # #1151: the model answered, but the read-back could not use what came back — every unparseable
+    # read and every non-SUCCEEDED terminal other than a credential rejection (which keeps its own
+    # code above). Distinct from a credential problem: the model itself is reachable and configured.
+    "MODEL_ANSWER_UNUSABLE",
 }
 
 # A minimal valid (non-VALIDATION_FAILED) envelope inner object used as a base for
