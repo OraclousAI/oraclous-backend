@@ -487,3 +487,27 @@ async def test_a_failed_member_still_appears_in_the_role_map() -> None:
 
     assert row.state == "FAILED"
     assert (row.child_execution_roles or {}).get(harness.execution_ids["b"]) == "b"
+
+
+async def test_a_contract_failed_member_still_appears_in_the_role_map() -> None:
+    # #1042 ruling: a member that DECLARED an output contract and omitted it is a different
+    # failure mode from the sibling above — the harness itself answers SUCCEEDED, and the
+    # orchestrator's OWN contract check (validate_payload, after dispatch returns) is what fails
+    # it, not the harness. on_child already fired inside that same dispatch, before the contract
+    # check ever ran, so the child id must be in the tree exactly like a harness-reported failure.
+    repo = FakeTeamRunRepo()
+    harness = ScriptedHarness()  # plain SUCCEEDED script — its prose output never carries "summary"
+    contract_b = {**_agent("b", ["a"]), "outputs_schema": {"required": ["summary"]}}
+
+    row = await _run(
+        _svc(repo, harness),
+        _principal(),
+        manifest=_team([_agent("a"), contract_b]),
+        sub_harnesses={},
+        gate_decisions={},
+    )
+
+    assert row.state == "FAILED"
+    assert row.results.get("b") is None  # "delivered nothing" — unchanged by this issue
+    assert (row.child_execution_roles or {}).get(harness.execution_ids["b"]) == "b"
+    assert "declared an output contract it did not deliver" in (row.error_message or "")

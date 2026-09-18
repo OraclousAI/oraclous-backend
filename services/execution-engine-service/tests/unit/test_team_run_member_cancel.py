@@ -497,3 +497,72 @@ async def test_hybrid_pool_only_unconfirmed_cancel_charges_headroom_and_gates_do
     nonzero_costs = sorted(c for c in costs if c)  # "w"/"c" contribute on_cost(0) each, filtered
     assert nonzero_costs == [300, 700]  # "a"'s real spend, then "t"'s charged remaining headroom
     assert result.member_status["b"] == "budget_skipped"  # the pool gated it, not a block
+
+
+@pytest.mark.parametrize(
+    "cancel_outcome",
+    [
+        None,
+        HarnessRejected(404, "not found"),
+        HarnessClientError("connection refused"),
+    ],
+    ids=["202_pending", "404_rejected", "transport_error"],
+)
+async def test_an_unconfirmed_cancel_still_reports_the_dispatched_execution_to_on_child(
+    cancel_outcome: Any,
+) -> None:
+    """#1042: a cancel that never CONFIRMS (202 -> None, or a raised HarnessRejected /
+    HarnessClientError) must not disappear from the run tree either — ``on_child`` still receives
+    the execution_id that was actually dispatched (minted before ``harness.execute``, the same id
+    ``harness.cancel`` was asked to stop), exactly once, under the member's role. Today
+    ``on_child`` is only ever called from inside the ``cancel_result is not None`` branch, so every
+    one of these three unconfirmed outcomes leaves ``children`` empty — RED on main. The #1067
+    timeout message and the existing fail-closed ``on_cost`` charge (the member's own resolved cap)
+    are pinned alongside, unchanged."""
+    costs: list[int] = []
+    children: list[tuple[str, str]] = []
+    harness = _TimeoutThenCancelHarness(cancel_results=[cancel_outcome])
+    dispatch = make_harness_dispatch(
+        harness,
+        {},
+        on_cost=costs.append,
+        on_child=lambda cid, role: children.append((cid, role)),
+    )
+    member = _member(role="a", max_tokens=5_000)
+    with pytest.raises(HarnessClientError) as exc_info:
+        await dispatch(member, [], None)
+    assert "timed out:" in str(exc_info.value)
+    assert costs == [5_000]  # unchanged fail-closed charge (the member's own resolved cap)
+    dispatched_id = harness.execute_calls[0].get("execution_id")
+    assert dispatched_id is not None
+    assert children == [(str(dispatched_id), "a")]
+
+
+class _EchoDispatchedIdCancelHarness(_TimeoutThenCancelHarness):
+    """Like ``_TimeoutThenCancelHarness``, but ``cancel()`` CONFIRMS with the SAME execution_id it
+    was asked to stop — mirroring a real harness's cancel response, which echoes back the id it
+    just cancelled rather than inventing a new one."""
+
+    async def cancel(self, execution_id: uuid.UUID, **kwargs: Any) -> dict[str, Any] | None:
+        self.cancel_calls.append({"execution_id": execution_id, **kwargs})
+        return {"id": str(execution_id), "status": "CANCELLED", "total_tokens": 0}
+
+
+async def test_a_confirmed_cancel_reports_the_execution_to_on_child_once() -> None:
+    """A CONFIRMED cancel whose result id equals the dispatched execution_id must still record
+    exactly ONE on_child entry — guards against a naive fix for the unconfirmed case above that
+    reports the dispatched id unconditionally on top of the existing confirmed-cancel on_child
+    call, double-recording the same execution under one role."""
+    children: list[tuple[str, str]] = []
+    harness = _EchoDispatchedIdCancelHarness()
+    dispatch = make_harness_dispatch(
+        harness,
+        {},
+        on_child=lambda cid, role: children.append((cid, role)),
+    )
+    member = _member(role="writer", max_tokens=1_000)
+    with pytest.raises(HarnessClientError):
+        await dispatch(member, [], None)
+    dispatched_id = harness.execute_calls[0].get("execution_id")
+    assert dispatched_id is not None
+    assert children == [(str(dispatched_id), "writer")]
