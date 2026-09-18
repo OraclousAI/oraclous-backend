@@ -1,6 +1,15 @@
 """#1137 acceptance e2e, through the GATEWAY: a member with NO tools still gets its declared
 deliverable saved.
 
+#1142 note: this test's member is asked for exactly ``posture``/``headline`` and nothing else, so
+its live answer is not expected to carry richer content — the assertion below is loosened from an
+exact-set match to a superset check (declared keys present, envelope keys absent) so it keeps
+proving #1137's contract without depending on whether a cheap model happens to add stray keys of
+its own. The richer-content behaviour itself (#1142) is pinned at the domain layer in
+``test_member_artifact_document.py``; a live case for a member whose answer genuinely carries
+undeclared keys is left to the implementer/qa-engineer as a fast-follow, the same way #1141 already
+tracks the tool-calling live case #1137 owed.
+
 Validation Desk's decision brief was lost on 5 of 5 runs because nothing enforced the model
 actually calling its save tool. This is the sharpest possible proof that the FIX does not depend
 on the model calling anything: the member declares NO tools at all — not even a bound ``Write`` —
@@ -207,7 +216,8 @@ def test_a_tool_less_members_declared_deliverable_is_saved_by_the_platform(
     content = json.loads(detail.json()["content"] or "{}")
     assert content.get("posture") == member_payload["posture"], content
     assert content.get("headline") == member_payload["headline"], content
-    assert set(content) == {"posture", "headline"}, (
-        "the saved document must carry exactly the declared keys, nothing merged in from the "
-        f"rest of the member's payload: {content}"
-    )
+    # #1142: the declared keys must always be present — a superset is fine now (the member's whole
+    # final answer, if it parsed one), but the run's bookkeeping must never be part of it.
+    assert {"posture", "headline"}.issubset(content), content
+    for envelope_key in ("status", "simulated", "unverified_links", "fetched_urls", "output"):
+        assert envelope_key not in content, (envelope_key, content)
