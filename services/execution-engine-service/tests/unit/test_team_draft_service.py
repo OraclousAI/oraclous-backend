@@ -1201,3 +1201,104 @@ async def test_refine_nl_peels_the_op_when_a_grounding_receipt_follows() -> None
     assert isinstance(outcome, RefineOutcome)
     assert outcome.applied is True
     assert outcome.op["op"] == "add_depends_on"
+
+
+# ── #1169: from-run and the settle-time save share ONE run-row saver ─────────
+#
+# ``TeamDraftService.save_from_run(*, run_row, org, user_id, name=None)`` is everything
+# ``create_from_run`` does from the ``state != "SUCCEEDED"`` check down, taking an already-loaded
+# run row. The principal-facing ``create_from_run`` keeps its fast path and its own run lookup,
+# then delegates. The settle path (a build run that just went SUCCEEDED) calls ``save_from_run``
+# directly, so a build that succeeds on a retry is saved exactly like one saved from the console.
+
+_ONE_MEMBER = (
+    '{"members": [{"role": "researcher", "kind": "agent", "subgoal": "research",'
+    ' "outputs_schema": {"required": ["summary"]}}]}'
+)
+
+
+async def test_save_from_run_persists_one_draft_and_reports_created() -> None:
+    svc, repo, team_runs = _service()
+    run = team_runs.seed("SUCCEEDED", _reviewer_results(_ONE_MEMBER))
+    row, verdict, created = await svc.save_from_run(run_row=run, org=_ORG, user_id=_USER)
+    assert created is True
+    assert verdict.would_block is False
+    assert len(repo.rows) == 1 and row.id in repo.rows
+    assert row.team_run_id == run.id  # the source run is stamped for idempotency
+    assert row.organisation_id == _ORG and row.user_id == _USER
+    assert {m["role"] for m in row.manifest["members"]} == {"researcher"}
+    assert set(row.sub_harnesses) == {"researcher"}
+
+
+async def test_a_second_save_from_run_for_the_same_run_returns_the_same_draft() -> None:
+    svc, repo, team_runs = _service()
+    run = team_runs.seed("SUCCEEDED", _reviewer_results(_ONE_MEMBER))
+    first, _v1, c1 = await svc.save_from_run(run_row=run, org=_ORG, user_id=_USER)
+    second, _v2, c2 = await svc.save_from_run(run_row=run, org=_ORG, user_id=_USER)
+    assert c1 is True and c2 is False
+    assert second.id == first.id
+    assert len(repo.rows) == 1  # exactly one row, never a duplicate
+
+
+async def test_from_run_after_the_settle_save_returns_that_draft_not_a_second_one() -> None:
+    # the console-after-settle path (#1169 criterion 3): the settle-time save already minted the
+    # draft, so a later from-run for the same run 200s with the SAME draft and adds nothing.
+    svc, repo, team_runs = _service()
+    run = team_runs.seed("SUCCEEDED", _reviewer_results(_ONE_MEMBER))
+    saved, _v1, c1 = await svc.save_from_run(run_row=run, org=_ORG, user_id=_USER)
+    again, _v2, c2 = await svc.create_from_run(_principal(), team_run_id=run.id)
+    assert c1 is True and c2 is False
+    assert again.id == saved.id
+    assert len(repo.rows) == 1
+
+
+async def test_save_from_run_on_a_run_that_did_not_succeed_is_the_curated_422() -> None:
+    svc, repo, team_runs = _service()
+    run = team_runs.seed("FAILED", {})
+    with pytest.raises(TeamRunError) as exc:
+        await svc.save_from_run(run_row=run, org=_ORG, user_id=_USER)
+    assert exc.value.status_code == 422
+    assert exc.value.error_type == "run_not_succeeded"
+    assert not repo.rows
+
+
+@pytest.mark.parametrize(
+    "results",
+    [
+        {},  # no reviewer output at all
+        _reviewer_results("no json here"),  # nothing to peel
+        _reviewer_results('{"members": []}'),  # empty members
+    ],
+)
+async def test_save_from_run_on_unparseable_reviewer_output_is_the_curated_422(
+    results: dict[str, Any],
+) -> None:
+    svc, repo, team_runs = _service()
+    run = team_runs.seed("SUCCEEDED", results)
+    with pytest.raises(TeamRunError) as exc:
+        await svc.save_from_run(run_row=run, org=_ORG, user_id=_USER)
+    assert exc.value.status_code == 422
+    assert exc.value.error_type == "reviewer_output_unparseable"
+    assert not repo.rows  # NOTHING persisted
+
+
+async def test_save_from_run_without_a_name_falls_back_to_a_compiled_hex_name() -> None:
+    import re
+
+    svc, _repo, team_runs = _service()
+    run = team_runs.seed("SUCCEEDED", _reviewer_results(_ONE_MEMBER))
+    row, _verdict, _created = await svc.save_from_run(
+        run_row=run, org=_ORG, user_id=_USER, name=None
+    )
+    assert re.fullmatch(r"compiled-[0-9a-f]{8}", row.name)
+
+
+async def test_save_from_run_uses_an_explicit_name_as_given() -> None:
+    # the settle path passes ``compiled-<run id hex[:8]>`` so the saved team is named after its run
+    svc, _repo, team_runs = _service()
+    run = team_runs.seed("SUCCEEDED", _reviewer_results(_ONE_MEMBER))
+    name = f"compiled-{run.id.hex[:8]}"
+    row, _verdict, _created = await svc.save_from_run(
+        run_row=run, org=_ORG, user_id=_USER, name=name
+    )
+    assert row.name == name
