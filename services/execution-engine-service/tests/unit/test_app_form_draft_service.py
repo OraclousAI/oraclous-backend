@@ -296,6 +296,21 @@ async def test_the_drafter_is_handed_the_request_the_run_was_started_with() -> N
     )
 
 
+async def test_the_drafter_run_carries_no_team_draft() -> None:
+    """#1163 R7 (pin). This is an internal caller — the drafter submits its own run through the
+    ``TeamRunService`` seam, and it must never carry a team draft's id/version. Only the console's
+    own ``POST /team-runs`` is allowed to set those, so a drift here would let a drafting run be
+    mistaken for one of the caller's own team-draft runs."""
+    svc, team_runs, repo = _service()
+    run = _source(repo)
+
+    await svc.suggest(_principal(), team_run_id=run.id, models=_MODELS)
+
+    kw = team_runs.created[-1]
+    assert kw.get("team_draft_id") is None
+    assert kw.get("team_draft_version") is None
+
+
 async def test_the_drafter_is_told_to_ask_for_a_website_address_not_a_name() -> None:
     """#953 — at the seam, not at the constant.
 

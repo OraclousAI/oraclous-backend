@@ -172,6 +172,7 @@ class _RunRow:
 class _FakeTeamRuns:
     def __init__(self) -> None:
         self.runs: dict[uuid.UUID, _RunRow] = {}
+        self.created: list[dict[str, Any]] = []
 
     def seed(
         self,
@@ -184,6 +185,7 @@ class _FakeTeamRuns:
         return row
 
     async def create(self, principal: Principal, **kw: Any) -> _RunRow:
+        self.created.append(kw)
         row = _RunRow("SUCCEEDED", {})
         self.runs[row.id] = row
         return row
@@ -234,6 +236,39 @@ async def test_refine_nl_on_a_simulated_fake_nothing_to_do_answer_is_op_drafter_
         await svc.refine_nl(row.id, _principal(), op_drafter_run_id=settled.id)
     assert exc.value.status_code == 422
     assert exc.value.error_type == "op_drafter_simulated"
+
+
+async def test_the_op_drafter_run_carries_no_team_draft() -> None:
+    """#1163 R7 (pin). This is an internal caller — refine-nl submits the op-drafter as its own
+    one-member team run through the ``TeamRunService`` seam, and that submission must never carry
+    a team draft's id/version. Only the console's own ``POST /team-runs`` sets those.
+
+    This file's fake op-drafter answers with no parseable op (empty ``results``), so the call
+    still raises ``op_drafter_unparseable`` afterwards — irrelevant here: the ``create`` call (and
+    its recorded keywords) happens before that parse, which is all this pin checks."""
+    svc, _repo, team_runs = _service()
+    row, _ = await svc.create(
+        _principal(), name="d", manifest=_team([_member("a")]), sub_harnesses={}
+    )
+
+    with pytest.raises(TeamRunError):
+        await svc.refine_nl(
+            row.id,
+            _principal(),
+            instruction="add a member",
+            models=[
+                {
+                    "role": "primary",
+                    "binding": "openrouter/x",
+                    "protocol_shape": "openai-compatible",
+                    "config": {"credential_id": "c1"},
+                }
+            ],
+        )
+
+    kw = team_runs.created[-1]
+    assert kw.get("team_draft_id") is None
+    assert kw.get("team_draft_version") is None
 
 
 async def test_refine_nl_on_the_same_answer_without_the_flag_is_still_op_drafter_unparseable() -> (

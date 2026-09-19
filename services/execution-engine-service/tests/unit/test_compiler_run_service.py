@@ -92,6 +92,25 @@ async def test_compiler_run_assembles_binds_and_submits_through_the_same_path() 
     assert submitted["graph_id"] == "graph-1"
 
 
+async def test_compiler_run_carries_no_team_draft() -> None:
+    """#1163 R7 (pin). This is an internal caller — the Describe door assembles and submits the
+    compiler team server-side, and that submission must never carry a team draft's id/version.
+    Only the console's own ``POST /team-runs`` sets those."""
+    team_runs = _FakeTeamRuns()
+    svc = CompilerRunService(team_runs=team_runs)  # type: ignore[arg-type]
+
+    await svc.create(
+        _principal(),
+        objective="Research this week's most-cited AI papers.",
+        models=[_model()],
+        graph_id="graph-1",
+    )
+
+    kw = team_runs.created[0]
+    assert kw.get("team_draft_id") is None
+    assert kw.get("team_draft_version") is None
+
+
 async def test_describe_fields_fold_into_the_planner_objective() -> None:
     team_runs = _FakeTeamRuns()
     svc = CompilerRunService(team_runs=team_runs)  # type: ignore[arg-type]

@@ -221,6 +221,18 @@ async def test_it_reads_the_idea_with_the_callers_own_model() -> None:
     assert _GOOD_IDEA in submitted["manifest"]["members"][0]["subgoal"]
 
 
+async def test_the_readback_run_carries_no_team_draft() -> None:
+    """#1163 R7 (pin). This is an internal caller — the intake read-back submits its own run
+    through the ``TeamRunService`` seam, and that submission must never carry a team draft's
+    id/version. Only the console's own ``POST /team-runs`` sets those."""
+    svc, team_runs = _service()
+    await svc.readback(_principal(), idea=_GOOD_IDEA, models=_MODELS)
+
+    kw = team_runs.created[0]
+    assert kw.get("team_draft_id") is None
+    assert kw.get("team_draft_version") is None
+
+
 async def test_the_answer_comes_back_as_ordered_spans_and_questions() -> None:
     svc, _ = _service()
     out = await svc.readback(_principal(), idea=_GOOD_IDEA, models=_MODELS)
