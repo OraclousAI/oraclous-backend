@@ -138,9 +138,26 @@ async def wired(engine_dsns) -> AsyncIterator[Any]:  # noqa: ANN001
         await runs.close()
 
 
-async def _finished_run(runs: Any, org: uuid.UUID, *, state: str = "SUCCEEDED") -> Any:
-    """A real run row in ``state``, carrying the documents it executed."""
+async def _finished_run(
+    runs: Any,
+    org: uuid.UUID,
+    *,
+    state: str = "SUCCEEDED",
+    team_draft_id: uuid.UUID | None = None,
+    team_draft_version: int | None = None,
+) -> Any:
+    """A real run row in ``state``, carrying the documents it executed.
+
+    ``team_draft_id``/``team_draft_version`` are forwarded to ``runs.create`` only when set, so
+    every existing caller — which never passes them — sees exactly the call it made before #1163.
+    """
     from oraclous_execution_engine_service.core.rls import org_scope
+
+    extra: dict[str, Any] = {}
+    if team_draft_id is not None:
+        extra["team_draft_id"] = team_draft_id
+    if team_draft_version is not None:
+        extra["team_draft_version"] = team_draft_version
 
     with org_scope(org):
         row = await runs.create(
@@ -150,6 +167,7 @@ async def _finished_run(runs: Any, org: uuid.UUID, *, state: str = "SUCCEEDED") 
             sub_harnesses={"scout": {"models": [{"binding": "default", "config": {}}]}},
             gate_decisions={},
             inputs={"task": "Write a competitor brief on Acme Cloud, focused on pricing."},
+            **extra,
         )
         if state != "QUEUED":
             await runs.transition(row.id, org, new_state=state, allowed_from=frozenset({"QUEUED"}))
@@ -618,3 +636,87 @@ async def test_an_organisation_app_with_neither_declared_reads_both_as_none(wire
     assert scout_step["description"] is None
     assert "max_wall_seconds" in detail["plan"]["limits"]
     assert detail["plan"]["limits"]["max_wall_seconds"] is None
+
+
+# ── #1163: the app is filled from the run's team, and app runs never carry one ──
+
+
+async def test_the_app_records_the_team_and_version_the_run_came_from(
+    wired: Any, engine_dsns: Any
+) -> None:
+    """R11: a converted app is not only pinned to what actually ran (#938) — it also names which
+    team draft, at which version, produced the run it was pinned from, so the console can point
+    a "made from" link at the draft that is still open for editing."""
+    from oraclous_execution_engine_service.core.rls import org_scope
+    from oraclous_execution_engine_service.repositories.app_repository import AppRepository
+
+    service, runs, _ = wired
+    draft_id = uuid.uuid4()
+    run = await _finished_run(runs, ORG_A, team_draft_id=draft_id, team_draft_version=5)
+
+    detail, _ = await service.create_from_run(
+        _principal(ORG_A), team_run_id=run.id, name="Brief", description=None, fields=FIELDS
+    )
+
+    _owner_async_dsn, app_async_dsn = engine_dsns
+    apps = AppRepository(app_async_dsn, platform_org_id=PLATFORM_ORG)
+    try:
+        with org_scope(ORG_A):
+            row = await apps.get(detail["id"], ORG_A)
+        assert row is not None
+        assert row.source_team_draft_id == draft_id
+        assert row.source_draft_version == 5
+    finally:
+        await apps.close()
+
+
+async def test_an_app_made_from_a_teamless_run_stores_neither_field(
+    wired: Any, engine_dsns: Any
+) -> None:
+    """The other half: a run started with no team (an internal caller, or a run predating #1163)
+    must not invent an id or a version for the app it becomes."""
+    from oraclous_execution_engine_service.core.rls import org_scope
+    from oraclous_execution_engine_service.repositories.app_repository import AppRepository
+
+    service, runs, _ = wired
+    run = await _finished_run(runs, ORG_A)
+
+    detail, _ = await service.create_from_run(
+        _principal(ORG_A), team_run_id=run.id, name="Brief", description=None, fields=FIELDS
+    )
+
+    _owner_async_dsn, app_async_dsn = engine_dsns
+    apps = AppRepository(app_async_dsn, platform_org_id=PLATFORM_ORG)
+    try:
+        with org_scope(ORG_A):
+            row = await apps.get(detail["id"], ORG_A)
+        assert row is not None
+        assert row.source_team_draft_id is None
+        assert row.source_draft_version is None
+    finally:
+        await apps.close()
+
+
+async def test_running_the_converted_app_never_hands_the_team_draft_fields_onward(
+    wired: Any,
+) -> None:
+    """Pin (green by design): running an app is a call into ``TeamRunService.create`` like any
+    other internal caller (R7) — it must never carry the team draft that made the APP, or a run of
+    the app would look, to the version-conflict check (R3), as though it came from a live draft
+    edit rather than from a frozen, already-converted copy."""
+    service, runs, recorder = wired
+    run = await _finished_run(runs, ORG_A)
+    detail, _ = await service.create_from_run(
+        _principal(ORG_A), team_run_id=run.id, name="Brief", description=None, fields=FIELDS
+    )
+
+    await service.run(
+        detail["id"],
+        _principal(ORG_A),
+        inputs={"competitor": "Acme Cloud", "focus": "their pricing move"},
+        models=_MODELS,
+    )
+
+    sent = recorder.calls[-1]
+    assert sent.get("team_draft_id") is None
+    assert sent.get("team_draft_version") is None

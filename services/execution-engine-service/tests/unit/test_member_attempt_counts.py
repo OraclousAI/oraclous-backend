@@ -148,6 +148,8 @@ class FakeTeamRunRepo:
         inputs: dict[str, Any] | None = None,
         seed_from_run_id: uuid.UUID | None = None,
         app_id: uuid.UUID | None = None,
+        team_draft_id: uuid.UUID | None = None,
+        team_draft_version: int | None = None,
     ) -> EngineTeamRun:
         row = EngineTeamRun(
             id=uuid.uuid4(),

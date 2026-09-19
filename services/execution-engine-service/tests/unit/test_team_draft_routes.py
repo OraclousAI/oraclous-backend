@@ -83,13 +83,18 @@ async def test_create_returns_201_with_the_draft_plus_verdict_envelope() -> None
 
 
 async def test_list_returns_team_drafts_total_and_forwards_pagination() -> None:
-    calls: list[dict[str, int]] = []
+    calls: list[dict[str, Any]] = []
 
     class _Svc:
         async def list_for_org(
-            self, principal: Principal, *, limit: int = 50, offset: int = 0
+            self,
+            principal: Principal,
+            *,
+            limit: int = 50,
+            offset: int = 0,
+            has_succeeded_run: bool | None = None,
         ) -> tuple[list[dict[str, Any]], int]:
-            calls.append({"limit": limit, "offset": offset})
+            calls.append({"limit": limit, "offset": offset, "has_succeeded_run": has_succeeded_run})
             return [
                 {
                     "id": uuid.uuid4(),
@@ -103,7 +108,7 @@ async def test_list_returns_team_drafts_total_and_forwards_pagination() -> None:
 
     async with _client(_Svc()) as c:
         body = (await c.get("/v1/engine/team-drafts?limit=2&offset=5")).json()
-    assert calls == [{"limit": 2, "offset": 5}]
+    assert calls == [{"limit": 2, "offset": 5, "has_succeeded_run": None}]
     assert body["total"] == 9 and len(body["team_drafts"]) == 1
     item = body["team_drafts"][0]
     assert item["version"] == 3 and item["member_count"] == 4

@@ -62,6 +62,8 @@ class FakeTeamRunRepo:
         inputs: dict[str, Any] | None = None,
         seed_from_run_id: uuid.UUID | None = None,
         app_id: uuid.UUID | None = None,  # #932: tracks the real repo's signature
+        team_draft_id: uuid.UUID | None = None,
+        team_draft_version: int | None = None,
     ) -> EngineTeamRun:
         row = EngineTeamRun(
             id=uuid.uuid4(),
@@ -78,6 +80,12 @@ class FakeTeamRunRepo:
             inputs=inputs,
             seed_from_run_id=seed_from_run_id,
         )
+        # #1163: the model has no such columns yet (pre-impl); set as plain
+        # attributes so callers that read them back see what they passed.
+        if team_draft_id is not None:
+            row.team_draft_id = team_draft_id
+        if team_draft_version is not None:
+            row.team_draft_version = team_draft_version
         self.rows[row.id] = row
         return row
 

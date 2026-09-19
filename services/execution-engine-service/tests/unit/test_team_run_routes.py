@@ -65,6 +65,8 @@ async def test_post_team_run_returns_202_queued_and_calls_create() -> None:
             graph_id: str | None = None,
             inputs: dict | None = None,  # #599: user-seeded state for a fan_out.over
             seed_from_run_id: uuid.UUID | None = None,  # #602: refresh from a named prior run
+            team_draft_id: uuid.UUID | None = None,
+            team_draft_version: int | None = None,
         ) -> EngineTeamRun:
             self.created.append(manifest)
             return _queued_row(manifest)
