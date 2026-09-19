@@ -110,6 +110,22 @@ ingest that times out records `failed` because its outcome is genuinely unknown 
 save timed out … (outcome unknown)`). Lower the value if your graph service is slow; the cost of
 lowering it is a missing document, which the member's own answer on the run still survives.
 
+## Build runs — the platform saves the compiled team (#1169)
+
+When a build (compiler) run settles `SUCCEEDED`, the worker saves the compiled team as a draft
+itself. A retry from the run page, a closed console tab, or a build started through the gateway API
+without the console all leave a saved team. The save is **best-effort**: a failed or slow save never
+changes the run's result, and is logged, not raised.
+
+`POST /v1/engine/team-drafts/from-run` stays as the safety net and saves the team if the settle-time
+save did not happen. It is one draft per run, so when the settle-time save got there first it
+returns that draft with HTTP `200` instead of `201`. Callers must accept both. The settle-time save
+names the draft `compiled-<first 8 hex chars of the run id>`; a later `from-run` call does not
+rename it. Runs that finished before this change are not backfilled; `from-run` still saves them on
+demand.
+
+The save has its own deadline, `ENGINE_TEAM_DRAFT_SAVE_TIMEOUT_SECONDS` (default `60`, seconds).
+
 ## Identity
 
 The gateway/dev/jwt seam mirrors the other services (ADR-018): in `gateway` mode the engine trusts the

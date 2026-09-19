@@ -54,6 +54,10 @@ HARNESS_CANCEL_TIMEOUT_SECONDS: float = 15.0
 # model-loop latency.
 ARTIFACT_SAVE_TIMEOUT_SECONDS: float = 5.0
 
+# #1169: the bound on the settle-time save of a compiled team (a registry resolve plus a draft
+# insert). Generous next to the artifact save: the run is already terminal and nothing waits on it.
+TEAM_DRAFT_SAVE_TIMEOUT_SECONDS: float = 60.0
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ENGINE_", extra="ignore")
@@ -155,6 +159,10 @@ class Settings(BaseSettings):
     # `ENGINE_`-prefixed operator override, read ONCE at the wiring boundary and threaded down, so
     # an operator whose KGS is slow can lower it further without touching code.
     artifact_save_timeout_seconds: float = ARTIFACT_SAVE_TIMEOUT_SECONDS
+
+    # #1169: the bound on the settle-time compiled-team save, read once at the wiring boundary
+    # like the timeouts above (`ENGINE_TEAM_DRAFT_SAVE_TIMEOUT_SECONDS`).
+    team_draft_save_timeout_seconds: float = TEAM_DRAFT_SAVE_TIMEOUT_SECONDS
 
     @field_validator("harness_member_call_timeout")
     @classmethod

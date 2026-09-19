@@ -34,6 +34,9 @@ from oraclous_execution_engine_service.repositories.roundtable_repository import
     RoundtableRepository,
 )
 from oraclous_execution_engine_service.repositories.schedule_repository import ScheduleRepository
+from oraclous_execution_engine_service.repositories.team_draft_repository import (
+    TeamDraftRepository,
+)
 from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
 from oraclous_execution_engine_service.services.artifacts_client import ArtifactsClient
 from oraclous_execution_engine_service.services.evaluate_client import EvaluateClient
@@ -42,6 +45,7 @@ from oraclous_execution_engine_service.services.job_service import JobService
 from oraclous_execution_engine_service.services.registry_client import RegistryClient
 from oraclous_execution_engine_service.services.roundtable_service import RoundtableService
 from oraclous_execution_engine_service.services.schedule_service import ScheduleService
+from oraclous_execution_engine_service.services.team_draft_service import TeamDraftService
 from oraclous_execution_engine_service.services.team_run_service import TeamRunService
 from oraclous_execution_engine_service.tasks.celery_app import AsyncTaskExecutor, celery_app
 
@@ -439,6 +443,14 @@ async def _drive_team_run_async(run_id_s: str, org_id_s: str, user_id_s: str) ->
         # §3.7 (#826): the flagship runtime's own worker drive needs a collector too — unlike
         # JobService/RoundtableService/ScheduleService, this was omitted entirely.
         sink = PostgresProvenanceSink(settings.database_url, worker_pool=True)
+        # #1169: the settle-time save of a compiled team. The registry client MUST carry the
+        # downstream headers, else the save silently keeps the team's agents inline.
+        team_drafts = TeamDraftRepository(settings.database_url, worker_pool=True)
+        draft_registry = RegistryClient(
+            settings.capability_registry_url,
+            headers=headers,
+            timeout=settings.capability_registry_request_timeout,
+        )
         try:
             service = TeamRunService(
                 team_runs=team_runs,
@@ -464,9 +476,15 @@ async def _drive_team_run_async(run_id_s: str, org_id_s: str, user_id_s: str) ->
                 # the artifacts client's flat 30s default.
                 artifact_save_timeout=settings.artifact_save_timeout_seconds,
             )
+            service.attach_team_draft_saver(
+                TeamDraftService(drafts=team_drafts, team_runs=service, registry=draft_registry),
+                settings.team_draft_save_timeout_seconds,
+            )
             result = await service.drive(run_id, principal)
             return {"team_run_id": run_id_s, "state": result.state}
         finally:
+            await team_drafts.close()
+            await draft_registry.aclose()
             await harness.aclose()
             await evaluate.aclose()
             await artifacts.aclose()
