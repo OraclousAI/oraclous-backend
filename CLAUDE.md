@@ -142,7 +142,7 @@ A story is **done** when, and only when:
 
 1. **CI is green** — lint (ruff + mypy + import contracts + guardrails), unit, integration (via testcontainers/docker), and security-if-applicable all pass.
 1b. **Deployed-stack e2e proven** — the bound behaviour is demonstrated against the **deployed docker stack via its real HTTP API, through the application-gateway** (the law above), not testcontainers/mocks/DB-direct alone. CI-green alone never satisfies this.
-1c. **E2E run locally before the PR is opened, PASS pasted into the PR** (`scripts/e2e.sh --up`) — CI's `e2e` job also builds and drives the real stack through the gateway, but keyless it runs the fake harness (`HARNESS_LLM_MODE=fake`; the BYOM real-LLM leg needs the `OPENROUTER_API_KEY` secret), and a fake-LLM run is never a DoD proof (rule 8) — so the local pre-PR run stands; the suite auto-skips when the gateway is down and a skip is **not** a pass (rule 3).
+1c. **E2E run locally before the PR is opened, PASS pasted into the PR** (`scripts/e2e.sh --up`) — no e2e runs in PR CI (it runs nightly, `.github/workflows/e2e-nightly.yml`, #1144), so never wait on a CI e2e check; this local run is the pre-PR proof; the suite auto-skips when the gateway is down and a skip is **not** a pass (rule 3).
 2. The `[tests]` PR and the `[impl]` PR are both **merged** — "PR opened" is not done.
 3. **Reviewed by a non-implementer** (full or light gate per §8); every required reviewer signed off explicitly (no silent approvals); the PR author was never the sole merger.
 4. The **CTO merged** the PR and recorded it in the merge digest. For a behaviour-touching PR the **CTO verifies the real gateway/MCP e2e PASS on the deployed stack before merging** — never on CI-green alone (rule 4).
