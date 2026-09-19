@@ -954,6 +954,24 @@ class TeamDraftListOut(BaseModel):
     total: int
 
 
+class TeamDraftSucceededVersion(BaseModel):
+    """ONE qualifying version row for a team draft (#1163, R12) — the LATEST SUCCEEDED run for
+    that version (highest ``finished_at``, ties broken by id DESC)."""
+
+    version: int
+    team_run_id: uuid.UUID
+    finished_at: datetime
+
+
+class TeamDraftSucceededVersionsOut(BaseModel):
+    """``GET .../team-drafts/{id}/succeeded-versions`` — the draft's SUCCEEDED versions, newest
+    first, plus the FULL matching ``total`` (#1163, R12)."""
+
+    team_draft_id: uuid.UUID
+    versions: list[TeamDraftSucceededVersion]
+    total: int
+
+
 class RefineTeamDraftOut(BaseModel):
     """A refine's outcome: the typed ``op`` that was applied (or rejected — returned so the
     console can render the structural preview), ``applied`` (false = the draft is untouched:
