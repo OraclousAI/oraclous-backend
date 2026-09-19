@@ -71,6 +71,15 @@ DispatchAnnounceFn = Callable[[str], Awaitable[None]]
 # bookkeeping append, not I/O) and best-effort: a raising hook never aborts the run.
 OnChildFn = Callable[[str, str], None]
 
+# #1119/#1154: the three reasons a run_if-gated member is skipped, so the graph read can tell them
+# apart instead of one bare False — a condition that ran and read false, a condition whose tested
+# source produced no output at all, and a condition that could not even be evaluated (a TypeError).
+RunIfSkipCode = Literal["condition_false", "condition_source_missing", "condition_error"]
+# #1119/#1154: fired (role, code, tested_role) once, synchronously, in the run_if skip branch —
+# same #828-style posture as the other hooks below: synchronous, best-effort, a raising hook never
+# aborts the run.
+OnSkipFn = Callable[[str, str, str], None]
+
 # Stage fan-out cap (#543): a wide imported team (e.g. 18 members collapsed into one flat stage)
 # would otherwise fire every member's LLM call at once against ONE shared per-org BYOM key and
 # self-throttle (429), failing a random member non-deterministically. Bound how many members
@@ -110,6 +119,9 @@ class TeamRunResult(BaseModel):
     # can persist a run-level grounding score. A zero-tools member makes no claims and gets no
     # bucket — an all-reasoning team has no score, which is not the same as a score of zero.
     member_grounding: dict[str, dict[str, int]] = Field(default_factory=dict)
+    # #1119/#1154: role -> {"code": RunIfSkipCode, "role": run_if.from_role} — ONLY a run_if skip
+    # gets an entry (the injected ``predicate`` skip, which the engine never uses, gets none).
+    member_skip_reasons: dict[str, dict[str, str]] = Field(default_factory=dict)
     # PR-C (ADR-043 #552): per-loop checkpoint — "<loop_index>" -> {round, started_at, status}. The
     # hybrid driver sets it so the engine can persist it + resume a loop at a round boundary.
     loop_state: dict[str, Any] = Field(default_factory=dict)
@@ -149,35 +161,43 @@ def _resolve_over(over: str, state: dict[str, Any], results: dict[str, Any]) -> 
     return list(value) if isinstance(value, (list, tuple)) else []
 
 
-def _eval_run_if(cond: OHMRunIf, results: dict[str, Any]) -> bool:
+def _run_if_verdict(cond: OHMRunIf, results: dict[str, Any]) -> Literal["run"] | RunIfSkipCode:
     """Evaluate a declarative conditional (OHMMember.run_if) against produced results — a safe,
-    no-eval comparison, FAIL-CLOSED (False) on a missing source or any type error. Returns True =
-    run the member, False = skip it."""
+    no-eval comparison, FAIL-CLOSED on a missing source or any type error. Returns ``"run"`` (run
+    the member) or a ``RunIfSkipCode`` naming WHY it is skipped (#1119/#1154): the run/skip DECISION
+    is byte-for-byte the same as the old ``_eval_run_if`` (only ``TypeError`` is caught, as before)
+    — this only adds the recorded reason.
+
+    ``condition_source_missing`` fires only when the tested member never produced output at all; a
+    declared ``field`` absent from a dict source still reads as ``None`` and falls through to the
+    ordinary comparison (``condition_false`` on a no-match), never source-missing."""
     src = results.get(cond.from_role)
     if src is None:  # the gated-on member didn't run / produced nothing -> do not run
-        return False
+        return "condition_source_missing"
     value = src.get(cond.field) if (cond.field is not None and isinstance(src, dict)) else src
     try:
         match cond.op:
             case "truthy":
-                return bool(value)
+                ok = bool(value)
             case "eq":
-                return bool(value == cond.value)
+                ok = bool(value == cond.value)
             case "ne":
-                return bool(value != cond.value)
+                ok = bool(value != cond.value)
             case "in":
-                return value in cond.value
+                ok = bool(value in cond.value)
             case "gt":
-                return bool(value > cond.value)
+                ok = bool(value > cond.value)
             case "lt":
-                return bool(value < cond.value)
+                ok = bool(value < cond.value)
             case "gte":
-                return bool(value >= cond.value)
+                ok = bool(value >= cond.value)
             case "lte":
-                return bool(value <= cond.value)
+                ok = bool(value <= cond.value)
+            case _:  # unreachable: OHMRunIf.op is a closed Literal — fail-closed all the same
+                return "condition_error"
     except TypeError:  # incomparable types / non-container 'in' -> fail-closed
-        return False
-    return False
+        return "condition_error"
+    return "run" if ok else "condition_false"
 
 
 async def _gather_capped(coros: list[Awaitable[Any]], max_parallel: int) -> list[Any]:
@@ -352,6 +372,7 @@ async def run_team(
     on_checkpoint: CheckpointFn | None = None,
     on_dispatch: DispatchAnnounceFn | None = None,
     on_child: OnChildFn | None = None,
+    on_skip: OnSkipFn | None = None,
 ) -> TeamRunResult:
     """Execute a Team Harness member DAG stage by stage, a real fan-in barrier between stages.
 
@@ -376,8 +397,9 @@ async def run_team(
     inside the stage semaphore, before ``dispatch`` runs — so a caller can write "working now"
     rather than only "finished". ``on_child`` (#828 item 4) fires ``(execution_id, role)`` whenever
     a single (non-fan-out) dispatch's result carries an ``"id"``, so a caller can attribute an
-    execution back to its member without its own dispatch closure threading the role through. Both
-    are best-effort, like ``on_checkpoint``: a raising hook never aborts the run.
+    execution back to its member without its own dispatch closure threading the role through.
+    ``on_skip`` (#1119/#1154) fires ``(role, code, tested_role)`` once a ``run_if``-gated member is
+    skipped. All three are best-effort, like ``on_checkpoint``: a raising hook never aborts the run.
     """
     state = state or {}
     gates = gate_decisions or {}
@@ -393,6 +415,8 @@ async def run_team(
     member_status: dict[str, str] = {}
     member_errors: dict[str, str] = {}
     member_grounding: dict[str, dict[str, int]] = {}  # #642: per tool-declaring member (claims)
+    # #1119/#1154: role -> {"code", "role"} — ONLY a run_if skip gets an entry (see TeamRunResult).
+    member_skip_reasons: dict[str, dict[str, str]] = {}
     # team-level termination (ADR-035): a wall-clock deadline for the whole DAG run. max_rounds /
     # convergence apply to the cyclic/B2 path, not this single-pass DAG; max_wall_seconds binds.
     _max_wall = (
@@ -520,6 +544,16 @@ async def run_team(
         except Exception:
             logger.exception("on_child hook failed for role %s; continuing best-effort", role)
 
+    def _announce_skip(role: str, code: str, tested_role: str) -> None:
+        # #1119/#1154: best-effort, same posture as the other hooks — a raising hook never aborts
+        # the run (synchronous, mirrors on_child).
+        if on_skip is None:
+            return
+        try:
+            on_skip(role, code, tested_role)
+        except Exception:
+            logger.exception("on_skip hook failed for role %s; continuing best-effort", role)
+
     async def run_member(role: str) -> None:
         nonlocal budget_exhausted
         if role in done:  # already executed in a prior drive — reuse, do not dispatch again
@@ -551,12 +585,17 @@ async def run_team(
             results[role] = None
             member_status[role] = "skipped"
             return
-        if member.run_if is not None and not _eval_run_if(member.run_if, results):
-            # declarative conditional dispatch (ADR-035): a prior output did not satisfy the test
-            skipped.append(role)
-            results[role] = None
-            member_status[role] = "skipped"
-            return
+        if member.run_if is not None:
+            verdict = _run_if_verdict(member.run_if, results)
+            if verdict != "run":
+                # declarative conditional dispatch (ADR-035): a prior output did not satisfy the
+                # test — #1119/#1154: record WHY (the reason map is written BEFORE the hook fires).
+                skipped.append(role)
+                results[role] = None
+                member_status[role] = "skipped"
+                member_skip_reasons[role] = {"code": verdict, "role": member.run_if.from_role}
+                _announce_skip(role, verdict, member.run_if.from_role)
+                return
         try:
             # Build the inbound hand-offs INSIDE the try (ADR-042): build_handoff fail-closes
             # (raises OHMHandoffError) when an upstream payload violates a typed output contract —
@@ -776,6 +815,7 @@ async def run_team(
                 member_status=member_status,
                 member_errors=member_errors,
                 member_grounding=member_grounding,
+                member_skip_reasons=member_skip_reasons,
             )
         rejected = [g for g in stage_gates if gate_verb(gates.get(g)) == "reject"]
         if rejected and not already_failed:  # the author rejected — halt; downstream does not run
@@ -789,6 +829,7 @@ async def run_team(
                 member_status=member_status,
                 member_errors=member_errors,
                 member_grounding=member_grounding,
+                member_skip_reasons=member_skip_reasons,
             )
         if (pause_at or rejected) and already_failed:
             break  # a recorded failure outranks the gate → fall through to the "failed" verdict
@@ -833,6 +874,7 @@ async def run_team(
             member_status=member_status,
             member_errors=member_errors,
             member_grounding=member_grounding,
+            member_skip_reasons=member_skip_reasons,
             partial=True,
         )
     final_status = "failed" if has_failure else "completed"
@@ -845,6 +887,7 @@ async def run_team(
         member_status=member_status,
         member_errors=member_errors,
         member_grounding=member_grounding,
+        member_skip_reasons=member_skip_reasons,
     )
 
 

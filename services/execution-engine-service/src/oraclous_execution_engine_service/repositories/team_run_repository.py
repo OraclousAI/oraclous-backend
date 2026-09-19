@@ -241,6 +241,7 @@ class TeamRunRepository:
         allowed_from: frozenset[str],
         member_error_codes: dict[str, str] | None = None,
         member_attempt_counts: dict[str, int] | None = None,
+        member_skip_reasons: dict[str, dict[str, str]] | None = None,
         **fields: Any,
     ) -> tuple[EngineTeamRun | None, bool]:
         """CAS the team run into ``new_state`` only if its current state is in ``allowed_from``,
@@ -248,12 +249,14 @@ class TeamRunRepository:
         concurrent driver that finds the run already RUNNING/terminal becomes a no-op.
 
         ``member_error_codes`` (#1108) is written only when not None, so a transition that does not
-        carry it never nulls the NOT NULL column. ``member_attempt_counts`` (#1111) follows the same
-        rule."""
+        carry it never nulls the NOT NULL column. ``member_attempt_counts`` (#1111) and
+        ``member_skip_reasons`` (#1119) follow the same rule."""
         if member_error_codes is not None:
             fields["member_error_codes"] = member_error_codes
         if member_attempt_counts is not None:
             fields["member_attempt_counts"] = member_attempt_counts
+        if member_skip_reasons is not None:
+            fields["member_skip_reasons"] = member_skip_reasons
         async with self._session() as session:
             async with session.begin():
                 result = await session.execute(

@@ -2377,6 +2377,19 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+  /v1/engine/team-runs/{teamRunId}/graph:
+    get:
+      tags: [engine]
+      summary: The run as a graph of members, statuses, skip reasons and depends_on edges — pointers only (org-scoped; a cross-org id is a 404).
+      operationId: getTeamRunGraph
+      x-stability: provisional
+      parameters:
+        - { name: teamRunId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/UpstreamJson" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /v1/engine/team-runs/{teamRunId}/advance:
     post:
       tags: [engine]
