@@ -511,6 +511,21 @@ class TeamDraftService:
             verdict = await self._verdict(existing.manifest, self._load_team(existing.manifest))
             return existing, verdict, False
         run = await self._team_runs.get(team_run_id, principal)  # org-scoped; 404 cross-org
+        return await self.save_from_run(
+            run_row=run, org=org, user_id=principal.principal_id, name=name
+        )
+
+    async def save_from_run(
+        self,
+        *,
+        run_row: EngineTeamRun,
+        org: uuid.UUID,
+        user_id: uuid.UUID,
+        name: str | None = None,
+    ) -> tuple[EngineTeamDraft, DraftVerdict, bool]:
+        """Peel, validate and persist the draft for an already-loaded run row (the settle path)."""
+        run = run_row
+        team_run_id = run.id
         if run.state != "SUCCEEDED":
             raise TeamRunError(
                 "only a SUCCEEDED run can seed a draft (the compiler reviewer's output is its"
@@ -604,7 +619,7 @@ class TeamDraftService:
         with org_scope(org):
             row, created = await self._drafts.create_from_run(
                 organisation_id=org,
-                user_id=principal.principal_id,
+                user_id=user_id,
                 name=draft_name,
                 manifest=manifest_doc,
                 sub_harnesses=subs,
