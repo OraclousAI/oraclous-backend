@@ -49,6 +49,8 @@ class TeamRunRepository:
         inputs: dict[str, Any] | None = None,
         seed_from_run_id: uuid.UUID | None = None,
         app_id: uuid.UUID | None = None,
+        team_draft_id: uuid.UUID | None = None,
+        team_draft_version: int | None = None,
     ) -> EngineTeamRun:
         row = EngineTeamRun(
             id=uuid.uuid4(),
@@ -65,6 +67,8 @@ class TeamRunRepository:
             inputs=inputs,
             seed_from_run_id=seed_from_run_id,  # #602: the named prior run this run refreshes from
             app_id=app_id,  # #932: the app this run was started from, for its own history
+            team_draft_id=team_draft_id,  # #1163: the draft this run was started from
+            team_draft_version=team_draft_version,  # #1163: the draft version it was loaded at
         )
         async with self._session() as session:
             async with session.begin():

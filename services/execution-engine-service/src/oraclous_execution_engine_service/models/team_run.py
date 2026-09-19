@@ -18,7 +18,7 @@ mapper configuration, so they must be real types.
 import uuid
 from typing import Any
 
-from sqlalchemy import Float, Index, Integer, String, Text, text
+from sqlalchemy import CheckConstraint, Float, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -182,6 +182,14 @@ class EngineTeamRun(BaseModel):
     # stays STRICTLY org-scoped even when the app is one every organisation can read — the app is
     # shared, its runs never are.
     app_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    # ── #1163 team-run source draft (additive, nullable) ──────────────────────────────────────
+    # Which team draft (and which version of it) this run was started from, so the console can
+    # offer "run again" against a specific draft snapshot and list a draft's succeeded versions.
+    # NO FK — mirrors app_id/schedule_id/seed_from_run_id: a deleted draft leaves its id in place
+    # here rather than nulling it out or blocking the delete. NULL for a run started any other way
+    # (internal callers never pass these; see ck_engine_team_runs_team_draft_pair below).
+    team_draft_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    team_draft_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     __table_args__ = (
         Index(
@@ -190,5 +198,17 @@ class EngineTeamRun(BaseModel):
             "idempotency_key",
             unique=True,
             postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        CheckConstraint(
+            "(team_draft_id IS NULL) = (team_draft_version IS NULL)",
+            name="ck_engine_team_runs_team_draft_pair",
+        ),
+        Index(
+            "ix_engine_team_runs_org_draft_succeeded",
+            "organisation_id",
+            "team_draft_id",
+            "team_draft_version",
+            "updated_at",
+            postgresql_where=text("state = 'SUCCEEDED' AND team_draft_id IS NOT NULL"),
         ),
     )
