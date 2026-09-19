@@ -76,6 +76,9 @@ from oraclous_execution_engine_service.repositories.maintenance_repository impor
     EngineMaintenanceRepository,
 )
 from oraclous_execution_engine_service.repositories.schedule_repository import ScheduleRepository
+from oraclous_execution_engine_service.repositories.team_draft_repository import (
+    TeamDraftRepository,
+)
 from oraclous_execution_engine_service.repositories.team_run_repository import TeamRunRepository
 from oraclous_execution_engine_service.services.artifacts_client import (
     ArtifactsClient,
@@ -1028,6 +1031,9 @@ class TeamRunService:
         artifacts: ArtifactsClient | None = None,
         schedules: ScheduleRepository | None = None,
         registry: RegistryClient | None = None,
+        # #1163: the draft store the create-time optimistic-concurrency check (R3) reads against.
+        # None on the worker/reaper paths, which never call `create`/`_check_team_draft`.
+        team_drafts: TeamDraftRepository | None = None,
         # #1067 (R1, item 4; craft review): the engine's per-member harness dispatch bound,
         # resolved ONCE at the wiring boundary (tasks/run_tasks.py, the same place
         # HarnessClient's own flat timeout is read) and passed down explicitly — never a
@@ -1067,6 +1073,7 @@ class TeamRunService:
         # capability registry ONCE, at create, and snapshots the result onto the run row. None ⇒ no
         # resolution is possible, so a member that carries only a reference fails closed at create.
         self._registry = registry
+        self._team_drafts = team_drafts
         self._harness_member_call_timeout = harness_member_call_timeout
         self._harness_cancel_timeout = harness_cancel_timeout
         self._artifact_save_timeout = artifact_save_timeout
@@ -1563,6 +1570,53 @@ class TeamRunService:
         delta["seed_records_parsed"] = seed_meta.get("seed_records_parsed", True)
         return delta
 
+    async def _check_team_draft(
+        self,
+        organisation_id: uuid.UUID,
+        team_draft_id: uuid.UUID | None,
+        team_draft_version: int | None,
+    ) -> None:
+        """#1163 (R3/R4/R5): optimistic concurrency against the team-draft store, run BEFORE any
+        other create-time check. Both fields absent is the common case (no team) and a no-op;
+        exactly one absent is a 422 naming the missing field; a present pair is checked against the
+        caller's org and the draft's current ``version`` — a mismatch (either direction) is a 409
+        so a stale tab reloads rather than spending tokens on an edited team. Never echoes the
+        draft's name or manifest — only ids/versions, which are not customer content."""
+        if team_draft_id is None and team_draft_version is None:
+            return
+        if team_draft_id is None:
+            raise TeamRunError(
+                "team_draft_id is required when team_draft_version is set",
+                422,
+                error_type="team_draft_ref_incomplete",
+                field="team_draft_id",
+            )
+        if team_draft_version is None:
+            raise TeamRunError(
+                "team_draft_version is required when team_draft_id is set",
+                422,
+                error_type="team_draft_ref_incomplete",
+                field="team_draft_version",
+            )
+        if self._team_drafts is None:
+            raise TeamRunError("team drafts store unavailable", 503)
+        with org_scope(organisation_id):
+            draft = await self._team_drafts.get(team_draft_id, organisation_id)
+        if draft is None:
+            raise TeamRunError(
+                "team_draft_id does not name a team draft in your organisation",
+                422,
+                error_type="invalid_team_draft",
+                field="team_draft_id",
+            )
+        if draft.version != team_draft_version:
+            raise TeamRunError(
+                f"the team has changed since it was loaded (now version {draft.version}); "
+                "reload it and run again",
+                409,
+                error_type="team_draft_version_conflict",
+            )
+
     async def create(
         self,
         principal: Principal,
@@ -1575,10 +1629,16 @@ class TeamRunService:
         inputs: dict[str, Any] | None = None,
         seed_from_run_id: uuid.UUID | None = None,
         app_id: uuid.UUID | None = None,
+        team_draft_id: uuid.UUID | None = None,
+        team_draft_version: int | None = None,
     ) -> EngineTeamRun:
         """Request path: validate + persist a QUEUED run + hand it to the worker (202). The drive
         runs on the worker so a large team (30 agents) never blocks/times out the HTTP request."""
         org = self._org(principal)
+        # #1163 (R5): the optimistic-concurrency precondition runs FIRST — before manifest
+        # validation, registry resolution and the credential pre-flight (which has a write side
+        # effect) — so a stale tab is refused before any of that work happens.
+        await self._check_team_draft(org, team_draft_id, team_draft_version)
         team = self._load_team(manifest)  # validate BEFORE persisting
         self._enforce_member_ceilings(team, sub_harnesses)  # ADR-032/035 §5 — fail-closed ceiling
         # #695 (ADR-050 D3): resolve each member's filed agent ONCE and keep the result as this
@@ -1626,6 +1686,8 @@ class TeamRunService:
                 inputs=inputs,
                 seed_from_run_id=seed_from_run_id,
                 app_id=app_id,  # #932: which app started this, so the app can show its history
+                team_draft_id=team_draft_id,
+                team_draft_version=team_draft_version,
             )
         if self._enqueue is not None:
             self._enqueue(row.id, org, principal.principal_id)
@@ -1754,6 +1816,28 @@ class TeamRunService:
         with org_scope(org):
             return await self._team_runs.list_for_org(
                 org, states=states, limit=bounded_limit, offset=bounded_offset
+            )
+
+    async def succeeded_versions_for_draft(
+        self,
+        principal: Principal,
+        team_draft_id: uuid.UUID,
+        *,
+        limit: int = _DEFAULT_LIST_LIMIT,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """#1163: the SUCCEEDED versions of one team draft (newest version first, latest run per
+        version), paginated — the read behind ``GET .../team-drafts/{id}/succeeded-versions``. Org
+        from the authenticated principal ONLY (a principal with no org is a 403); bounds are
+        clamped exactly as ``list_for_org`` does. ``team_draft_id`` is passed through unchecked —
+        the caller (``TeamDraftService.succeeded_versions``) resolves the draft (and its 404) first,
+        so this method never sees a cross-org id in the request path."""
+        org = self._org(principal)
+        bounded_limit = max(1, min(int(limit), _MAX_LIST_LIMIT))
+        bounded_offset = max(0, int(offset))
+        with org_scope(org):
+            return await self._team_runs.succeeded_versions_for_draft(
+                org, team_draft_id, limit=bounded_limit, offset=bounded_offset
             )
 
     # ── #604 closed-loop verdict-consumption (ADR-048 decision 5) ─────────────────────────────────

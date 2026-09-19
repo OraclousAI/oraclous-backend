@@ -31,6 +31,8 @@ from oraclous_execution_engine_service.schema.engine_schemas import (
     TeamDraftListItem,
     TeamDraftListOut,
     TeamDraftOut,
+    TeamDraftSucceededVersion,
+    TeamDraftSucceededVersionsOut,
 )
 from oraclous_execution_engine_service.services.team_draft_service import (
     DraftVerdict,
@@ -98,12 +100,18 @@ async def list_team_drafts(
     service: TeamDraftServiceDep,
     limit: Annotated[int, Query()] = 50,
     offset: Annotated[int, Query()] = 0,
+    has_succeeded_run: Annotated[bool | None, Query()] = None,
 ) -> TeamDraftListOut:
     """The org's drafts, newest-first, paginated (``limit`` default 50 / max 200, ``offset``
     default 0 — both clamped server-side; born bounded, WP-10). REGISTERED BEFORE
-    ``/team-drafts/{team_draft_id}`` so the bare collection path is never captured as an id."""
+    ``/team-drafts/{team_draft_id}`` so the bare collection path is never captured as an id.
+
+    ``has_succeeded_run`` (#1163, R14) filters to drafts with (``true``) or without (``false``)
+    any SUCCEEDED run; omitted, the list is unfiltered (today's behaviour)."""
     try:
-        rows, total = await service.list_for_org(principal, limit=limit, offset=offset)
+        rows, total = await service.list_for_org(
+            principal, limit=limit, offset=offset, has_succeeded_run=has_succeeded_run
+        )
     except TeamRunError as exc:  # a principal with no org → the contracted 403, not a 500
         raise _http(exc) from exc
     return TeamDraftListOut(
@@ -148,6 +156,33 @@ async def get_team_draft(
     except TeamRunError as exc:
         raise _http(exc) from exc
     return _envelope(row, verdict)
+
+
+@router.get(
+    "/team-drafts/{team_draft_id}/succeeded-versions",
+    response_model=TeamDraftSucceededVersionsOut,
+)
+async def get_team_draft_succeeded_versions(
+    team_draft_id: uuid.UUID,
+    principal: PrincipalDep,
+    service: TeamDraftServiceDep,
+    limit: Annotated[int, Query()] = 50,
+    offset: Annotated[int, Query()] = 0,
+) -> TeamDraftSucceededVersionsOut:
+    """The draft's SUCCEEDED versions, newest-first, one row per version — its LATEST SUCCEEDED
+    run (#1163, R12). A missing or foreign draft is a 404 (R16). A version with no qualifying run
+    is simply absent; a draft with none gives an empty page, not an error."""
+    try:
+        rows, total = await service.succeeded_versions(
+            team_draft_id, principal, limit=limit, offset=offset
+        )
+    except TeamRunError as exc:
+        raise _http(exc) from exc
+    return TeamDraftSucceededVersionsOut(
+        team_draft_id=team_draft_id,
+        versions=[TeamDraftSucceededVersion.model_validate(r) for r in rows],
+        total=total,
+    )
 
 
 @router.put("/team-drafts/{team_draft_id}", response_model=TeamDraftEnvelope)

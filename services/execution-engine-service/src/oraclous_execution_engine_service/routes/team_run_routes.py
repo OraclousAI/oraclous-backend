@@ -98,6 +98,8 @@ async def create_team_run(
             graph_id=body.graph_id,
             inputs=body.inputs,
             seed_from_run_id=body.seed_from_run_id,  # #602: refresh from a named prior run
+            team_draft_id=body.team_draft_id,  # #1163: source draft + the version the caller loaded
+            team_draft_version=body.team_draft_version,
         )
     except TeamRunPreflightError as exc:
         return preflight_409(exc)  # #664: the connect prompt, in the shape the gateway relays

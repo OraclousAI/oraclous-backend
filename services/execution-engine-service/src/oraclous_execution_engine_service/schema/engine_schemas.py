@@ -419,6 +419,12 @@ class CreateTeamRunRequest(BaseModel):
     # and at settle the engine emits a first-class 5-way what-changed delta. Validated org-scoped +
     # SUCCEEDED-only at create (fail-fast 422); None → a normal (non-refresh) run.
     seed_from_run_id: uuid.UUID | None = None
+    # #1163: the team draft this run was started from, and the draft `version` the caller loaded.
+    # Both or neither — a lone one is 422 `team_draft_ref_incomplete`. The server checks it against
+    # the draft's current version (optimistic concurrency: a stale tab gets 409
+    # `team_draft_version_conflict`) and stores the version the caller sent.
+    team_draft_id: uuid.UUID | None = None
+    team_draft_version: int | None = Field(default=None, ge=1)
 
 
 class AdvanceTeamRunRequest(BaseModel):
@@ -507,6 +513,11 @@ class TeamRunOut(BaseModel):
     # (like the #634 list row) — additive, non-breaking.
     graph_id: str | None = None
     team_name: str | None = None
+    # #1163: which team draft (and which of its versions) this run was started from — always
+    # present, null when the run carries no team (internal callers, pre-#1163 rows). A deleted
+    # draft still keeps its id here (no FK, see the migration).
+    team_draft_id: uuid.UUID | None = None
+    team_draft_version: int | None = None
     # #642: the share of this run's claims that carried a valid receipt (Σ grounded / Σ total across
     # its tool-declaring members). None when the team declares no tools — nothing to ground — and on
     # pre-#642 rows. Read beside the cost so a green run can't hide an ungrounded one.
@@ -940,6 +951,24 @@ class TeamDraftListOut(BaseModel):
     the engine's ``{<key>: [...], total}`` list wire convention, born bounded (WP-10)."""
 
     team_drafts: list[TeamDraftListItem]
+    total: int
+
+
+class TeamDraftSucceededVersion(BaseModel):
+    """ONE qualifying version row for a team draft (#1163, R12) — the LATEST SUCCEEDED run for
+    that version (highest ``finished_at``, ties broken by id DESC)."""
+
+    version: int
+    team_run_id: uuid.UUID
+    finished_at: datetime
+
+
+class TeamDraftSucceededVersionsOut(BaseModel):
+    """``GET .../team-drafts/{id}/succeeded-versions`` — the draft's SUCCEEDED versions, newest
+    first, plus the FULL matching ``total`` (#1163, R12)."""
+
+    team_draft_id: uuid.UUID
+    versions: list[TeamDraftSucceededVersion]
     total: int
 
 

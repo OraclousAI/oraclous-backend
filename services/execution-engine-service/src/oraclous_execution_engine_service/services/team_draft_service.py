@@ -410,13 +410,43 @@ class TeamDraftService:
         return row, await self._verdict(row.manifest, self._load_team(row.manifest))
 
     async def list_for_org(
-        self, principal: Principal, *, limit: int = 50, offset: int = 0
+        self,
+        principal: Principal,
+        *,
+        has_succeeded_run: bool | None = None,
+        limit: int = 50,
+        offset: int = 0,
     ) -> tuple[list[dict[str, Any]], int]:
+        """#1163: ``has_succeeded_run`` filters the org's drafts to those with (``True``) or
+        without (``False``) any SUCCEEDED run; ``None`` (default) is the unfiltered list."""
         org = self._org(principal)
         bounded_limit = max(1, min(limit, 200))  # born bounded (WP-10) — mirror #633
         bounded_offset = max(0, offset)
         with org_scope(org):
-            return await self._drafts.list_for_org(org, limit=bounded_limit, offset=bounded_offset)
+            return await self._drafts.list_for_org(
+                org,
+                has_succeeded_run=has_succeeded_run,
+                limit=bounded_limit,
+                offset=bounded_offset,
+            )
+
+    async def succeeded_versions(
+        self,
+        draft_id: uuid.UUID,
+        principal: Principal,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """#1163: the draft's SUCCEEDED versions (newest first, latest run per version) — the read
+        behind ``GET .../team-drafts/{id}/succeeded-versions``. ``_get_or_404`` resolves the draft
+        in the caller's org first (a missing or foreign draft is a 404, R12/R16), so the run read
+        below is only ever reached for a draft this org can see."""
+        org = self._org(principal)
+        await self._get_or_404(draft_id, org)
+        return await self._team_runs.succeeded_versions_for_draft(
+            principal, draft_id, limit=limit, offset=offset
+        )
 
     async def replace(
         self,

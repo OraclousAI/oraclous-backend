@@ -173,6 +173,12 @@ class AppService:
         (``run.manifest`` + ``run.sub_harnesses``), not the draft that produced them — a draft's
         old versions are not retained, so there is nothing else to freeze from.
 
+        The run's own ``team_draft_id``/``team_draft_version`` (#1163) — which team draft and
+        version it was started from, or both ``None`` for a run that carried no team — are copied
+        onto the app's ``source_team_draft_id``/``source_draft_version`` columns as-is, including
+        when they are ``None``. Those columns have been on ``engine_apps`` since #932; nothing else
+        writes them.
+
         Returns ``(detail, created)`` — the SAME shape a read returns, so the console can open the
         new app immediately; ``created`` is ``False`` when this run already has an app (no delete
         endpoint exists in this issue, so a double-submitted save must not leave a duplicate nobody
@@ -245,6 +251,8 @@ class AppService:
                 manifest=run.manifest,
                 sub_harnesses=run.sub_harnesses,
                 source_team_run_id=run.id,
+                source_team_draft_id=run.team_draft_id,
+                source_draft_version=run.team_draft_version,
                 form=[asdict(f) for f in parsed_fields],
             )
         return self._as_detail(row), True

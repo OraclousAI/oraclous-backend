@@ -273,27 +273,6 @@ async def get_registry_client(
         await client.aclose()
 
 
-def get_team_run_service(
-    team_runs: Annotated[TeamRunRepository, Depends(get_team_run_repository)],
-    graphs: Annotated[GraphClient, Depends(get_graph_client)],
-    registry: Annotated[RegistryClient, Depends(get_registry_client)],
-    provenance: Annotated[ProvenanceCollector, Depends(get_provenance)],
-) -> TeamRunService:
-    # the request path only validates/creates/advances + ENQUEUES; the worker drives the team
-    # (run_tasks.drive_team_run_task), so a large team never blocks the request. No harness here.
-    # `graphs` is the request-path KGS existence check for a graph-bound run's graph_id (#524).
-    # #695: `registry` (org-scoped by the caller's downstream headers) resolves each member's filed
-    # agent ONCE at create and snapshots it onto the run row. The WORKER needs none — it only
-    # drives, and the snapshot is already on the row by then.
-    return TeamRunService(
-        team_runs=team_runs,
-        provenance=provenance,
-        enqueue=enqueue_team_run,
-        graphs=graphs,
-        registry=registry,
-    )
-
-
 def get_team_draft_repository(request: Request) -> TeamDraftRepository:
     repo = getattr(request.app.state, "team_draft_repository", None)
     if repo is None:
@@ -302,6 +281,30 @@ def get_team_draft_repository(request: Request) -> TeamDraftRepository:
             detail="engine store unavailable (DATABASE_URL not reachable)",
         )
     return repo
+
+
+def get_team_run_service(
+    team_runs: Annotated[TeamRunRepository, Depends(get_team_run_repository)],
+    graphs: Annotated[GraphClient, Depends(get_graph_client)],
+    registry: Annotated[RegistryClient, Depends(get_registry_client)],
+    provenance: Annotated[ProvenanceCollector, Depends(get_provenance)],
+    team_drafts: Annotated[TeamDraftRepository, Depends(get_team_draft_repository)],
+) -> TeamRunService:
+    # the request path only validates/creates/advances + ENQUEUES; the worker drives the team
+    # (run_tasks.drive_team_run_task), so a large team never blocks the request. No harness here.
+    # `graphs` is the request-path KGS existence check for a graph-bound run's graph_id (#524).
+    # #695: `registry` (org-scoped by the caller's downstream headers) resolves each member's filed
+    # agent ONCE at create and snapshots it onto the run row. The WORKER needs none — it only
+    # drives, and the snapshot is already on the row by then.
+    # #1163: `team_drafts` backs the create-time optimistic-concurrency check (R3).
+    return TeamRunService(
+        team_runs=team_runs,
+        provenance=provenance,
+        enqueue=enqueue_team_run,
+        graphs=graphs,
+        registry=registry,
+        team_drafts=team_drafts,
+    )
 
 
 def get_app_repository(request: Request) -> AppRepository:
