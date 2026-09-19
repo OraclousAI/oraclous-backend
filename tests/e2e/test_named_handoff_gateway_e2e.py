@@ -92,7 +92,8 @@ def test_a_compiled_team_declares_what_each_member_hands_on(
         "/v1/engine/team-drafts/from-run",
         json={"team_run_id": run["id"], "name": "named-handoff team"},
     )
-    assert seeded.status_code == 201, seeded.text
+    # #1169: the engine saves the compiled team at settle, so this call is usually the 200 repeat
+    assert seeded.status_code in (200, 201), seeded.text
     envelope = seeded.json()
     assert envelope["would_block"] is False, envelope
     members = envelope["draft"]["manifest"]["members"]

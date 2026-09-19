@@ -593,7 +593,9 @@ def test_the_whole_loop_compile_draft_refine_go_through_the_gateway(
         "/v1/engine/team-drafts/from-run",
         json={"team_run_id": run["id"], "name": "compiled digest team"},
     )
-    assert seeded.status_code == 201, seeded.text
+    # #1169: the engine saves the compiled team at settle, so the console's call usually finds it
+    # (200); it is 201 only when it wins the race
+    assert seeded.status_code in (200, 201), seeded.text
     envelope = seeded.json()
     assert envelope["would_block"] is False, envelope
     draft = envelope["draft"]
