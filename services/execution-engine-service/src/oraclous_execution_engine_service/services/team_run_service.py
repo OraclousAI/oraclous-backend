@@ -25,7 +25,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from oraclous_governance import Principal
 from oraclous_ohm._slug import tool_slug
@@ -50,12 +50,14 @@ from oraclous_execution_engine_service.core.config import (
     ARTIFACT_SAVE_TIMEOUT_SECONDS,
     HARNESS_CANCEL_TIMEOUT_SECONDS,
     HARNESS_MEMBER_CALL_TIMEOUT_CEILING_SECONDS,
+    TEAM_DRAFT_SAVE_TIMEOUT_SECONDS,
 )
 from oraclous_execution_engine_service.core.rls import org_scope
 from oraclous_execution_engine_service.domain import verdict_consumption as vc
 from oraclous_execution_engine_service.domain.answer_roles import sink_roles
 from oraclous_execution_engine_service.domain.app_answers import ANSWERS_KEY, parse_answers
 from oraclous_execution_engine_service.domain.app_form import SITE_RESTRICTION_KEY
+from oraclous_execution_engine_service.domain.compiled_team import is_compile_run
 from oraclous_execution_engine_service.domain.member_artifact import (
     build_document,
     should_autosave,
@@ -101,6 +103,10 @@ from oraclous_execution_engine_service.services.team_run import (
     make_recalibration_coordinator,
     run_team_hybrid,
 )
+
+if TYPE_CHECKING:  # runtime import would cycle: team_draft_service imports this module
+    from oraclous_execution_engine_service.models.team_draft import EngineTeamDraft
+    from oraclous_execution_engine_service.services.team_draft_service import DraftVerdict
 
 logger = logging.getLogger(__name__)
 
@@ -1018,6 +1024,20 @@ def _pre_run_artifact_count(artifacts: list[dict[str, Any]], run_created_at: dat
 _COMPILED_REF_PREFIX = "org:compiled/"
 
 
+class CompiledTeamSaver(Protocol):
+    """#1169: what the settle path needs to save a compiled team (`TeamDraftService` implements it;
+    declared here because team_draft_service already imports this module)."""
+
+    async def save_from_run(
+        self,
+        *,
+        run_row: EngineTeamRun,
+        org: uuid.UUID,
+        user_id: uuid.UUID,
+        name: str | None = None,
+    ) -> tuple[EngineTeamDraft, DraftVerdict, bool]: ...
+
+
 class TeamRunService:
     def __init__(
         self,
@@ -1048,6 +1068,10 @@ class TeamRunService:
         # down explicitly. Small by design: this save sits inside the checkpoint the orchestrator
         # awaits, and was ruled to never delay a settled member.
         artifact_save_timeout: float = ARTIFACT_SAVE_TIMEOUT_SECONDS,
+        # #1169: saves the compiled team when a build run settles SUCCEEDED. None on every path
+        # except the worker drive; same wiring-boundary timeout posture as above.
+        team_draft_saver: CompiledTeamSaver | None = None,
+        team_draft_save_timeout: float = TEAM_DRAFT_SAVE_TIMEOUT_SECONDS,
     ) -> None:
         # The drive runs on the WORKER (like jobs/round-tables): the request path (create/advance)
         # needs `enqueue` (hand the QUEUED run to the broker) but NOT a harness; the worker `drive`
@@ -1077,6 +1101,8 @@ class TeamRunService:
         self._harness_member_call_timeout = harness_member_call_timeout
         self._harness_cancel_timeout = harness_cancel_timeout
         self._artifact_save_timeout = artifact_save_timeout
+        self._team_draft_saver = team_draft_saver
+        self._team_draft_save_timeout = team_draft_save_timeout
 
     def _org(self, principal: Principal) -> uuid.UUID:
         if principal.organisation_id is None:  # fail-closed tenancy (ADR-006)
@@ -3097,6 +3123,7 @@ class TeamRunService:
         # passing/absent gate) is a valid seed. Best-effort like the accrual.
         if consumed is not None and consumed.state == "SUCCEEDED":
             await self._stamp_schedule_seed(row, org)
+            await self._save_compiled_team(consumed, org)
         return consumed
 
     @staticmethod
@@ -3156,6 +3183,26 @@ class TeamRunService:
             return
         with contextlib.suppress(Exception), org_scope(org):
             await self._schedules.set_last_settled_run(row.schedule_id, org, row.id)
+
+    async def _save_compiled_team(self, row: EngineTeamRun, org: uuid.UUID) -> None:
+        """#1169: save a SUCCEEDED build run as a team, so a retry or a closed console tab still
+        yields one. BEST-EFFORT: the run is already settled and its finish emitted; a failed or
+        slow save must never raise or change it (the console's from-run still saves it)."""
+        if self._team_draft_saver is None or not is_compile_run(row.manifest):
+            return
+        try:
+            with org_scope(org):
+                await asyncio.wait_for(
+                    self._team_draft_saver.save_from_run(
+                        run_row=row,
+                        org=org,
+                        user_id=row.user_id,
+                        name=f"compiled-{row.id.hex[:8]}",
+                    ),
+                    timeout=self._team_draft_save_timeout,
+                )
+        except Exception:
+            logger.exception("compiled-team save failed run=%s org=%s", row.id, org)
 
     async def reap_stale(
         self, maintenance: EngineMaintenanceRepository, *, older_than: datetime
