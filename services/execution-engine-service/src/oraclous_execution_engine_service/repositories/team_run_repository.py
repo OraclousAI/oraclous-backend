@@ -216,6 +216,53 @@ class TeamRunRepository:
             ).scalar_one()
         return rows, int(total or 0)
 
+    async def succeeded_versions_for_draft(
+        self,
+        organisation_id: uuid.UUID,
+        team_draft_id: uuid.UUID,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """#1163: the org's SUCCEEDED runs of one team draft, one row per DISTINCT
+        ``team_draft_version`` — the LATEST such run per version (highest ``updated_at``, an ``id``
+        tiebreaker), newest version first, paginated. ``finished_at`` is backed by ``updated_at``:
+        while a run is SUCCEEDED it is never transitioned again (R13), so that column IS its settle
+        time. Org-scoped (ADR-006) + RLS-backstopped (ADR-030) — served by
+        ``ix_engine_team_runs_org_draft_succeeded`` (organisation_id, team_draft_id,
+        team_draft_version, updated_at) WHERE state = 'SUCCEEDED'."""
+        conditions = [
+            EngineTeamRun.organisation_id == organisation_id,
+            EngineTeamRun.team_draft_id == team_draft_id,
+            EngineTeamRun.state == "SUCCEEDED",
+        ]
+        async with self._session() as session:
+            page = await session.execute(
+                select(
+                    EngineTeamRun.team_draft_version.label("version"),
+                    EngineTeamRun.id.label("team_run_id"),
+                    EngineTeamRun.updated_at.label("finished_at"),
+                )
+                .where(*conditions)
+                .distinct(EngineTeamRun.team_draft_version)
+                .order_by(
+                    EngineTeamRun.team_draft_version.desc(),
+                    EngineTeamRun.updated_at.desc(),
+                    EngineTeamRun.id.desc(),
+                )
+                .limit(limit)
+                .offset(offset)
+            )
+            rows = [dict(r._mapping) for r in page.all()]
+            total = (
+                await session.execute(
+                    select(func.count(func.distinct(EngineTeamRun.team_draft_version))).where(
+                        *conditions
+                    )
+                )
+            ).scalar_one()
+        return rows, int(total or 0)
+
     async def has_active_for_schedule(
         self, schedule_id: uuid.UUID, organisation_id: uuid.UUID
     ) -> bool:

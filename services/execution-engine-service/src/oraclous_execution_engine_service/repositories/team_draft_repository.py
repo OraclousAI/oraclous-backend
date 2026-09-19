@@ -16,6 +16,7 @@ from sqlalchemy.pool import NullPool
 
 from oraclous_execution_engine_service.core.rls import install_org_guc_guard
 from oraclous_execution_engine_service.models.team_draft import EngineTeamDraft
+from oraclous_execution_engine_service.models.team_run import EngineTeamRun
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import CursorResult
@@ -126,6 +127,7 @@ class TeamDraftRepository:
         self,
         organisation_id: uuid.UUID,
         *,
+        has_succeeded_run: bool | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[dict[str, Any]], int]:
@@ -135,8 +137,24 @@ class TeamDraftRepository:
         ``limit``/``offset``) so a drafts table can paginate. Org-scoped (ADR-006) +
         RLS-backstopped (ADR-030). Projects ONLY the list-row columns — never ``manifest``/
         ``sub_harnesses`` — digging the member count out of ``manifest -> 'members'`` at query
-        time, so a large manifest is never loaded (mirrors the #633 team-run list)."""
-        condition = EngineTeamDraft.organisation_id == organisation_id
+        time, so a large manifest is never loaded (mirrors the #633 team-run list).
+
+        #1163: ``has_succeeded_run`` filters by whether ANY run of the draft ever settled
+        SUCCEEDED (an ``EXISTS`` correlated on ``organisation_id`` + ``team_draft_id``, so no FK
+        is needed) — applied to BOTH the page and the count, so pagination stays correct under
+        the filter rather than dropping rows after the fact."""
+        conditions = [EngineTeamDraft.organisation_id == organisation_id]
+        if has_succeeded_run is not None:
+            succeeded = (
+                select(EngineTeamRun.id)
+                .where(
+                    EngineTeamRun.organisation_id == EngineTeamDraft.organisation_id,
+                    EngineTeamRun.team_draft_id == EngineTeamDraft.id,
+                    EngineTeamRun.state == "SUCCEEDED",
+                )
+                .exists()
+            )
+            conditions.append(succeeded if has_succeeded_run else ~succeeded)
         async with self._session() as session:
             page = await session.execute(
                 select(
@@ -151,7 +169,7 @@ class TeamDraftRepository:
                     EngineTeamDraft.created_at,
                     EngineTeamDraft.updated_at,
                 )
-                .where(condition)
+                .where(*conditions)
                 .order_by(EngineTeamDraft.created_at.desc(), EngineTeamDraft.id.desc())
                 .limit(limit)
                 .offset(offset)
@@ -159,7 +177,7 @@ class TeamDraftRepository:
             rows = [dict(r._mapping) for r in page.all()]
             total = (
                 await session.execute(
-                    select(func.count()).select_from(EngineTeamDraft).where(condition)
+                    select(func.count()).select_from(EngineTeamDraft).where(*conditions)
                 )
             ).scalar_one()
         return rows, int(total or 0)

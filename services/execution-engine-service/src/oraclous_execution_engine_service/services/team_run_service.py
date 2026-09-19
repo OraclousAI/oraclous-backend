@@ -1818,6 +1818,28 @@ class TeamRunService:
                 org, states=states, limit=bounded_limit, offset=bounded_offset
             )
 
+    async def succeeded_versions_for_draft(
+        self,
+        principal: Principal,
+        team_draft_id: uuid.UUID,
+        *,
+        limit: int = _DEFAULT_LIST_LIMIT,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """#1163: the SUCCEEDED versions of one team draft (newest version first, latest run per
+        version), paginated — the read behind ``GET .../team-drafts/{id}/succeeded-versions``. Org
+        from the authenticated principal ONLY (a principal with no org is a 403); bounds are
+        clamped exactly as ``list_for_org`` does. ``team_draft_id`` is passed through unchecked —
+        the caller (``TeamDraftService.succeeded_versions``) resolves the draft (and its 404) first,
+        so this method never sees a cross-org id in the request path."""
+        org = self._org(principal)
+        bounded_limit = max(1, min(int(limit), _MAX_LIST_LIMIT))
+        bounded_offset = max(0, int(offset))
+        with org_scope(org):
+            return await self._team_runs.succeeded_versions_for_draft(
+                org, team_draft_id, limit=bounded_limit, offset=bounded_offset
+            )
+
     # ── #604 closed-loop verdict-consumption (ADR-048 decision 5) ─────────────────────────────────
     async def _consume_verdict(
         self, row: EngineTeamRun, team: OHMManifest, org: uuid.UUID
