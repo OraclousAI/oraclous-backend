@@ -2314,6 +2314,14 @@ paths:
     post:
       tags: [engine]
       summary: Run an OHM v1.1 Team Harness (202 — validated, persisted QUEUED and driven async by the worker; poll GET for state). 409 CREDENTIALS_REQUIRED when a declared tool has no configured, working instance — the run never starts and nothing is spent (#664).
+      description: >-
+        `team_draft_id` + `team_draft_version` (#1163) pin the run to the team draft it was
+        started from. Both must be given together, and the draft must currently be at that
+        version: a stale version (the draft moved since the caller loaded it) is 409 CONFLICT,
+        `error_type: team_draft_version_conflict` — reload the draft and retry, nothing is
+        persisted and nothing is spent. A partial pair is 422 VALIDATION_FAILED,
+        `TEAM_DRAFT_REF_INCOMPLETE`; a foreign or missing draft is 422 VALIDATION_FAILED,
+        `INVALID_TEAM_DRAFT`. Omitting both runs the team ad hoc, as before.
       operationId: createTeamRun
       x-stability: provisional
       requestBody:
@@ -2615,6 +2623,14 @@ paths:
             Drafts to skip before collecting the page (WP-10 pagination). OPTIONAL; defaults to 0.
             Paired with the deterministic `created_at DESC` ordering so paging is repeatable.
           schema: { type: integer, minimum: 0, default: 0 }
+        - name: has_succeeded_run
+          in: query
+          required: false
+          description: >-
+            Filter to drafts with (`true`) or without (`false`) at least one SUCCEEDED run
+            (#1163, R14). Omitted → unfiltered (today's behaviour). Filtering happens server-side
+            so pagination stays correct.
+          schema: { type: boolean }
       responses:
         "200": { $ref: "#/components/responses/UpstreamJson" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
@@ -2693,6 +2709,43 @@ paths:
         - { name: teamDraftId, in: path, required: true, schema: { type: string } }
       responses:
         "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/engine/team-drafts/{teamDraftId}/succeeded-versions:
+    get:
+      tags: [engine]
+      summary: List a team draft's SUCCEEDED versions, newest-first, one row per version — its latest SUCCEEDED run (#1163, R12).
+      description: >-
+        Each entry is a version of this draft that has at least one SUCCEEDED team run, carrying
+        that version's LATEST such run (highest `finished_at`, ties broken by id DESC).
+        `finished_at` is the run's settle time. A version with no qualifying run is simply absent;
+        a draft with none gives an empty page, not an error. A missing or foreign draft is a 404
+        (R16).
+      operationId: listTeamDraftSucceededVersions
+      x-stability: provisional
+      parameters:
+        - { name: teamDraftId, in: path, required: true, schema: { type: string } }
+        - name: limit
+          in: query
+          required: false
+          description: >-
+            Maximum versions to return (WP-10 pagination). OPTIONAL; defaults to 50 and is CLAMPED
+            server-side to a hard maximum of 200, so no single read is unbounded.
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: offset
+          in: query
+          required: false
+          description: >-
+            Versions to skip before collecting the page (WP-10 pagination). OPTIONAL; defaults to
+            0. Paired with the deterministic `version DESC` ordering so paging is repeatable.
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        "200":
+          description: The draft's qualifying versions, newest-first.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TeamDraftSucceededVersionsOut" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -3951,7 +4004,12 @@ components:
         validated org-scoped at create; `inputs` seeds team state a `fan_out.over: "$.<key>"`
         resolves; `seed_from_run_id` names a prior SUCCEEDED run of the caller's org whose stored
         output seeds this run (seeded refresh — the run then settles with a first-class
-        what-changed `refresh_delta`).
+        what-changed `refresh_delta`). `team_draft_id` + `team_draft_version` (#1163) name the team
+        draft and the version the caller loaded it at; they must be given together (a partial pair
+        is 422 `team_draft_ref_incomplete`) and the draft must be in the caller's organisation and
+        currently at that version (a foreign/missing draft is 422 `invalid_team_draft`; a version
+        that has since moved is 409 `team_draft_version_conflict` — reload the draft and retry).
+        Both are optional; omitted, the run carries no team.
       required: [manifest]
       additionalProperties: true
       properties:
@@ -3966,6 +4024,8 @@ components:
         graph_id: { type: string, nullable: true }
         inputs: { type: object, nullable: true, additionalProperties: true }
         seed_from_run_id: { type: string, format: uuid, nullable: true }
+        team_draft_id: { type: string, format: uuid, nullable: true }
+        team_draft_version: { type: integer, minimum: 1, nullable: true }
     AdvanceTeamRunRequest:
       type: object
       description: >-
@@ -3983,9 +4043,10 @@ components:
       type: object
       description: >-
         A team run as `getTeamRun` reads it back. The engine owns the body; this contract pins only
-        `member_error_codes` (#1109) and passes every other field through as the engine wrote it —
-        the operation's summary lists what to expect there.
-      required: [member_error_codes]
+        `member_error_codes` (#1109) and `team_draft_id`/`team_draft_version` (#1163), and passes
+        every other field through as the engine wrote it — the operation's summary lists what to
+        expect there.
+      required: [member_error_codes, team_draft_id, team_draft_version]
       additionalProperties: true
       properties:
         member_error_codes:
@@ -3997,6 +4058,41 @@ components:
             the provider's own message, which can name an internal host. Empty when nothing failed,
             and never absent — so "no member failed" is never mistaken for "not checked". See the
             operation's `x-stable-member-error-codes` for which tokens are a stable contract.
+        team_draft_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            The team draft this run was started from (#1163). Always present; null when the run
+            carries no team. A deleted draft keeps its id here.
+        team_draft_version:
+          type: integer
+          nullable: true
+          description: >-
+            The draft version this run was started from (#1163). Always present; null exactly when
+            `team_draft_id` is null.
+    TeamDraftSucceededVersion:
+      type: object
+      description: >-
+        One qualifying version of a team draft (#1163, R12) — the LATEST SUCCEEDED run for that
+        version (highest `finished_at`, ties broken by id DESC).
+      required: [version, team_run_id, finished_at]
+      properties:
+        version: { type: integer }
+        team_run_id: { type: string, format: uuid }
+        finished_at: { type: string, format: date-time }
+    TeamDraftSucceededVersionsOut:
+      type: object
+      description: >-
+        `listTeamDraftSucceededVersions` — a team draft's SUCCEEDED versions, newest-first, plus
+        the FULL matching `total` (#1163, R12).
+      required: [team_draft_id, versions, total]
+      properties:
+        team_draft_id: { type: string, format: uuid }
+        versions:
+          type: array
+          items: { $ref: "#/components/schemas/TeamDraftSucceededVersion" }
+        total: { type: integer }
   responses:
     UpstreamJson:
       description: Success — a JSON body produced and owned by the upstream service, streamed through unchanged.
