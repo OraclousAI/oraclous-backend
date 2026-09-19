@@ -116,7 +116,12 @@ class _FakeDraftRepo:
         return row, True
 
     async def list_for_org(
-        self, organisation_id: uuid.UUID, *, limit: int = 50, offset: int = 0
+        self,
+        organisation_id: uuid.UUID,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        has_succeeded_run: bool | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         return [], 0
 
