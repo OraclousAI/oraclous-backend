@@ -2656,6 +2656,7 @@ paths:
       tags: [engine]
       summary: Seed a draft from a SUCCEEDED compiler run — the engine peels the reviewer's compiled JSON, validates it through the shared importer seam, and synthesizes per-member sub-harnesses; an ineligible run is a curated 422, nothing persisted (422 reviewer_output_simulated — #907 — when the run's reviewer ran on the scripted stand-in LLM, distinct from reviewer_output_unparseable). IDEMPOTENT per (org, team_run_id) — #638 — 201 on the first call, 200 returning the SAME draft on a repeat (a reload / second tab on ?compile=<runId>); the envelope is identical either way, so re-POSTing is safe.
       operationId: createTeamDraftFromRun
+      description: When a build run settles SUCCEEDED the engine's worker already saves the compiled team itself (best-effort, named compiled-<first 8 hex chars of the run id>), so this call may return that draft with 200 instead of creating one with 201; callers must accept both. This call remains the safety net when the settle-time save did not happen, and it does not rename an existing draft.
       x-stability: provisional
       requestBody:
         required: true
