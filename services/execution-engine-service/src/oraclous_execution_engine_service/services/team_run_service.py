@@ -1104,6 +1104,11 @@ class TeamRunService:
         self._team_draft_saver = team_draft_saver
         self._team_draft_save_timeout = team_draft_save_timeout
 
+    def attach_team_draft_saver(self, saver: CompiledTeamSaver, timeout: float) -> None:
+        # #1169: the saver (TeamDraftService) itself needs this service, so it is built after it.
+        self._team_draft_saver = saver
+        self._team_draft_save_timeout = timeout
+
     def _org(self, principal: Principal) -> uuid.UUID:
         if principal.organisation_id is None:  # fail-closed tenancy (ADR-006)
             raise TeamRunError("authenticated principal has no organisation scope", 403)
