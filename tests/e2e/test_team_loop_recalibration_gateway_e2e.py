@@ -42,6 +42,8 @@ requires_byom = pytest.mark.skipif(
 )
 _MODEL = os.environ["E2E_MODEL"]
 
+_MAX_ROUNDS = 8  # both recalibration loops' bound (also the poll budget's basis, #921)
+
 
 def _cred(c: httpx.Client, user_id: str, key: str, name: str) -> str:
     r = c.post(
@@ -122,14 +124,31 @@ def _import_loop_team(
     return doc, subs
 
 
-def _poll(c: httpx.Client, run_id: str, tries: int = 200) -> dict:
+def _poll(c: httpx.Client, run_id: str, budget_s: float) -> dict:
     row: dict = {}
-    for _ in range(tries):
-        row = c.get(f"/v1/engine/team-runs/{run_id}").json()
+    started = time.monotonic()
+    deadline = started + budget_s
+    while time.monotonic() < deadline:
+        resp = c.get(f"/v1/engine/team-runs/{run_id}")
+        # #921: a non-2xx (e.g. a stale-token 401) or a body with no 'state' used to surface as a
+        # bare KeyError several lines away from the real cause. Name the status + body instead —
+        # the test's own polling scaffolding broke, not the product under test (TEST-SETUP).
+        if resp.status_code != 200:
+            raise AssertionError(
+                f"[e2e-failure:TEST-SETUP] poll GET /v1/engine/team-runs/{run_id} -> "
+                f"{resp.status_code}: {resp.text[:500]}"
+            )
+        row = resp.json()
+        if "state" not in row:
+            raise AssertionError(f"poll response for run {run_id} has no 'state': {row}")
         if row["state"] in {"SUCCEEDED", "FAILED", "REJECTED", "PAUSED"}:
             return row
         time.sleep(3)
-    raise AssertionError(f"run {run_id} never terminated (last: {row.get('state')})")
+    elapsed = time.monotonic() - started
+    raise AssertionError(
+        f"run {run_id} never terminated (last: {row.get('state')}) after {elapsed:.0f}s "
+        f"(budget {budget_s:.0f}s)"
+    )
 
 
 def _recal_count(row: dict) -> int:
@@ -142,6 +161,7 @@ def _recal_count(row: dict) -> int:
 def test_unrecoverable_loop_recalibrates_then_halts_at_the_cap(
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
+    loop_poll_budget: Callable[[int], float],
 ) -> None:
     # an unsatisfiable threshold over enough rounds: the loop STALLS, the conductor runs ONE bounded
     # recalibration (a real BYOM directive turn), still can't converge → the cap HALTS it FAILED —
@@ -152,7 +172,7 @@ def test_unrecoverable_loop_recalibrates_then_halts_at_the_cap(
 
     nonce = uuid.uuid4().hex[:10]
     doc, subs = _import_loop_team(
-        c, user, nonce, or_cred, convergence="evaluator>=0.99", max_rounds=8
+        c, user, nonce, or_cred, convergence="evaluator>=0.99", max_rounds=_MAX_ROUNDS
     )
     gid = c.post("/api/v1/graphs", json={"name": "writer-critic-recal-halt"}).json()["id"]
 
@@ -163,7 +183,8 @@ def test_unrecoverable_loop_recalibrates_then_halts_at_the_cap(
     assert created.status_code == 202, created.text
     run_id = created.json()["id"]
 
-    done = _poll(c, run_id)  # bounded by _poll's tries cap → proves it is not a forever loop
+    # bounded by _poll's deadline → proves it is not a forever loop
+    done = _poll(c, run_id, loop_poll_budget(_MAX_ROUNDS))
     assert done["state"] == "FAILED", f"an unrecoverable loop must HALT FAILED, not {done['state']}"
     # the BYOM recalibrator FIRED on the real stack — the surfaced checkpoint records the spend
     assert _recal_count(done) >= 1, (
@@ -183,6 +204,7 @@ def test_unrecoverable_loop_recalibrates_then_halts_at_the_cap(
 def test_stalling_loop_recovers_through_recalibration(
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
+    loop_poll_budget: Callable[[int], float],
 ) -> None:
     # a clearable threshold: a stalling team gets UNSTUCK — recovering in-drive after a recal,
     # or via the ADR-042 bounded re-run — to SUCCEEDED. It recovers; it never runs forever.
@@ -192,7 +214,7 @@ def test_stalling_loop_recovers_through_recalibration(
 
     nonce = uuid.uuid4().hex[:10]
     doc, subs = _import_loop_team(
-        c, user, nonce, or_cred, convergence="evaluator>=0.8", max_rounds=8
+        c, user, nonce, or_cred, convergence="evaluator>=0.8", max_rounds=_MAX_ROUNDS
     )
     gid = c.post("/api/v1/graphs", json={"name": "writer-critic-recal-recover"}).json()["id"]
 
@@ -202,8 +224,9 @@ def test_stalling_loop_recovers_through_recalibration(
     )
     assert created.status_code == 202, created.text
     run_id = created.json()["id"]
+    budget = loop_poll_budget(_MAX_ROUNDS)
 
-    done = _poll(c, run_id)
+    done = _poll(c, run_id, budget)
     spent_recal = _recal_count(done)
     for _ in range(4):  # ADR-042: re-run a weak-model failure, bounded, until it recovers
         if done["state"] == "SUCCEEDED":
@@ -211,7 +234,7 @@ def test_stalling_loop_recovers_through_recalibration(
         assert done["state"] == "FAILED", done
         rr = c.post(f"/v1/engine/team-runs/{run_id}/rerun")
         assert rr.status_code == 202, rr.text
-        done = _poll(c, run_id)
+        done = _poll(c, run_id, budget)
         spent_recal = max(spent_recal, _recal_count(done))
     assert done["state"] == "SUCCEEDED", f"the stalling loop never recovered: {done}"
     # a real-model recovery (a fake can't clear the real evaluator's >=0.8 grade to SUCCEED): every

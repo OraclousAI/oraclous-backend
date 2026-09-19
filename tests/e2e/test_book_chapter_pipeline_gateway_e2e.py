@@ -67,8 +67,24 @@ def _registry_capable(c: httpx.Client, sub: dict) -> list[dict]:
     ]
 
 
+_NO_TOOL_NOTE = (
+    "\n\nYou have no tool that reads or writes a file. Never name, invent, quote, or paraphrase "
+    "any file path, directory name, or filename in your reply — not even as a hypothetical or a "
+    "description of where content would go. Describe your work only as prose in your answer text."
+)
+
+
 def _bind(c: httpx.Client, imported: object, or_cred: str) -> tuple[dict, dict]:
-    """Bind the BYOM model onto the imported manifest + each sub-harness (the import->run seam)."""
+    """Bind the BYOM model onto the imported manifest + each sub-harness (the import->run seam).
+
+    #921: every member the prose-coordinator import produces is tool-less by construction
+    (``orchestrator.py``/``prose_coordinator.py`` never assign capabilities), yet the book-studio
+    SKILL.md pipeline text hands each one an objective naming the file it "produces" (e.g.
+    ``research/raw/CH-NN.md``). A real model narrating that objective invents its own concrete
+    filename or subfolder, which the #696 grounding check (correctly, and by design) fails as an
+    unbacked location claim — it was never literally handed. Rather than weaken that check, tell
+    every tool-less member up front not to name any path at all, so it has nothing to fabricate.
+    """
     model = {
         "role": "primary",
         "binding": _MODEL,
@@ -79,8 +95,23 @@ def _bind(c: httpx.Client, imported: object, or_cred: str) -> tuple[dict, dict]:
     for sub in subs.values():
         sub["models"] = [model]
         sub["capabilities"] = _registry_capable(c, sub)
+        prompts = sub.get("prompts") or []
+        # only the prose-coordinator chapter-pipeline steps need the note — every row of the
+        # SKILL.md table uses the parser's own "→" separator (see prose_coordinator._ARROW), so
+        # this matches exactly the objectives that name a deliverable path; a plain reasoning-
+        # only leaf agent (e.g. the skill-driver test's panel-runner) has no arrow and keeps its
+        # own exact instructions untouched.
+        if prompts and not sub["capabilities"] and "\u2192" in prompts[0].get("body", ""):
+            sub["prompts"] = [
+                {**p, "body": p["body"] + _NO_TOOL_NOTE} if i == 0 else p
+                for i, p in enumerate(prompts)
+            ]
     doc = imported.manifest.model_dump(mode="json")  # type: ignore[attr-defined]
     doc["models"] = [model]
+    for member in doc.get("members", []):
+        subgoal = member.get("subgoal") or ""
+        if subgoal and not member.get("tools") and "\u2192" in subgoal:
+            member["subgoal"] = subgoal + _NO_TOOL_NOTE
     return doc, subs
 
 

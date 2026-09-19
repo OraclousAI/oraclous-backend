@@ -43,6 +43,9 @@ requires_byom = pytest.mark.skipif(
 
 _MODEL = os.environ["E2E_MODEL"]  # the suite model (#1000); a 2-round writer↔critic can clear it
 
+_MAX_ROUNDS = 6  # the convergence proof's loop bound (also the poll budget's basis, #921)
+_HALT_MAX_ROUNDS = 1  # the halt proof's unsatisfiable-in-one-round bound
+
 
 def _cred(c: httpx.Client, user_id: str, key: str, name: str) -> str:
     r = c.post(
@@ -139,20 +142,39 @@ def _import_loop_team(
     return doc, subs
 
 
-def _poll(c: httpx.Client, run_id: str, tries: int = 150) -> dict:
+def _poll(c: httpx.Client, run_id: str, budget_s: float) -> dict:
     row: dict = {}
-    for _ in range(tries):
-        row = c.get(f"/v1/engine/team-runs/{run_id}").json()
+    started = time.monotonic()
+    deadline = started + budget_s
+    while time.monotonic() < deadline:
+        resp = c.get(f"/v1/engine/team-runs/{run_id}")
+        # #921: a non-2xx (e.g. a stale-token 401) or a body with no 'state' used to surface as a
+        # bare KeyError several lines away from the real cause. Name the status + body instead —
+        # the test's own polling scaffolding broke, not the product under test (TEST-SETUP).
+        if resp.status_code != 200:
+            raise AssertionError(
+                f"[e2e-failure:TEST-SETUP] poll GET /v1/engine/team-runs/{run_id} -> "
+                f"{resp.status_code}: {resp.text[:500]}"
+            )
+        row = resp.json()
+        if "state" not in row:
+            raise AssertionError(f"poll response for run {run_id} has no 'state': {row}")
         if row["state"] in {"SUCCEEDED", "FAILED", "REJECTED", "PAUSED"}:
             return row
         time.sleep(3)
-    raise AssertionError(f"run {run_id} never terminated (last: {row.get('state')})")
+    elapsed = time.monotonic() - started
+    raise AssertionError(
+        f"run {run_id} never terminated (last: {row.get('state')}) after {elapsed:.0f}s "
+        f"(budget {budget_s:.0f}s)"
+    )
 
 
 @requires_byom
 def test_cyclic_team_converges_on_a_real_model_and_lands_artifacts(
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
+    loop_poll_budget: Callable[[int], float],
+    fail_as: Callable[[str, str], None],
 ) -> None:
     user = register(f"loopconv{uuid.uuid4().hex[:10]} owner")
     c = gateway_client(user["token"])
@@ -160,7 +182,7 @@ def test_cyclic_team_converges_on_a_real_model_and_lands_artifacts(
 
     nonce = uuid.uuid4().hex[:10]
     doc, subs = _import_loop_team(
-        c, user, nonce, or_cred, convergence="evaluator>=0.8", max_rounds=6
+        c, user, nonce, or_cred, convergence="evaluator>=0.8", max_rounds=_MAX_ROUNDS
     )
     gid = c.post("/api/v1/graphs", json={"name": "writer-critic"}).json()["id"]
 
@@ -171,16 +193,17 @@ def test_cyclic_team_converges_on_a_real_model_and_lands_artifacts(
     assert created.status_code == 202, created.text
     run_id = created.json()["id"]
 
+    budget = loop_poll_budget(_MAX_ROUNDS)
     # the conductor iterates writer↔critic until the CODED done-check confirms. ADR-042: re-run any
     # member that the weak model failed/blocked, bounded, until SUCCEEDED.
-    done = _poll(c, run_id)
+    done = _poll(c, run_id, budget)
     for _ in range(4):
         if done["state"] == "SUCCEEDED":
             break
         assert done["state"] == "FAILED", done
         rr = c.post(f"/v1/engine/team-runs/{run_id}/rerun")
         assert rr.status_code == 202, rr.text
-        done = _poll(c, run_id)
+        done = _poll(c, run_id, budget)
     assert done["state"] == "SUCCEEDED", f"the loop never converged to SUCCEEDED: {done}"
 
     member_status = done.get("member_status") or {}
@@ -190,10 +213,12 @@ def test_cyclic_team_converges_on_a_real_model_and_lands_artifacts(
     assert nonce in str(done["results"]), (
         f"nonce in no result — was the harness LIVE? {done['results']}"
     )
-    # the coded done-check's evaluator gate stored a passing grade
+    # the coded done-check's evaluator gate stored a passing grade. The product worked (the loop
+    # ran, the gate stored a score) — a below-threshold score is the real model's own answer
+    # falling short of the test's bar, not a defect (#921 MODEL-QUALITY).
     verdict = done.get("verdict") or {}
-    if verdict.get("score") is not None:
-        assert float(verdict["score"]) >= 0.8, verdict
+    if verdict.get("score") is not None and float(verdict["score"]) < 0.8:
+        fail_as("MODEL-QUALITY", f"evaluator score below 0.8 threshold: {verdict}")
 
     # the loop's work LANDED on the bound graph + serves verbatim through /v1/artifacts (the
     # coverage-floor's landed-artifacts half — the graph is fresh per-run, so it's from this run)
@@ -209,6 +234,7 @@ def test_cyclic_team_converges_on_a_real_model_and_lands_artifacts(
 def test_non_converging_loop_halts_at_a_coded_bound_and_is_re_runnable(
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
+    loop_poll_budget: Callable[[int], float],
 ) -> None:
     # the team can NEVER satisfy its own done-check: an unsatisfiable threshold in ONE round ends
     # FAILED at the coded bound (max_rounds / no_progress), re-runnable — not a forever loop, not a
@@ -219,7 +245,7 @@ def test_non_converging_loop_halts_at_a_coded_bound_and_is_re_runnable(
 
     nonce = uuid.uuid4().hex[:10]
     doc, subs = _import_loop_team(
-        c, user, nonce, or_cred, convergence="evaluator>=0.999", max_rounds=1
+        c, user, nonce, or_cred, convergence="evaluator>=0.999", max_rounds=_HALT_MAX_ROUNDS
     )
     gid = c.post("/api/v1/graphs", json={"name": "writer-critic-halt"}).json()["id"]
 
@@ -229,7 +255,7 @@ def test_non_converging_loop_halts_at_a_coded_bound_and_is_re_runnable(
     )
     assert created.status_code == 202, created.text
     run_id = created.json()["id"]
-    done = _poll(c, run_id)
+    done = _poll(c, run_id, loop_poll_budget(_HALT_MAX_ROUNDS))
 
     assert done["state"] == "FAILED", f"a non-converging loop must HALT FAILED, not {done['state']}"
     member_status = done.get("member_status") or {}

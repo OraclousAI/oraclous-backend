@@ -37,6 +37,8 @@ requires_byom = pytest.mark.skipif(
 )
 _MODEL = os.environ["E2E_MODEL"]
 
+_MAX_ROUNDS = 8  # the compounding loop's bound (also the poll budget's basis, #921)
+
 
 def _cred(c: httpx.Client, user_id: str, key: str) -> str:
     r = c.post(
@@ -109,23 +111,43 @@ def _import_team(c: httpx.Client, user: dict, nonce: str, or_cred: str) -> tuple
 
     doc = imported.manifest.model_dump(mode="json")
     doc["orchestration"]["success_criteria"] = "a short, accurate, clear paragraph on the topic"
-    doc["orchestration"]["termination"] = {"convergence": "evaluator>=0.75", "max_rounds": 8}
+    doc["orchestration"]["termination"] = {
+        "convergence": "evaluator>=0.75",
+        "max_rounds": _MAX_ROUNDS,
+    }
     doc.setdefault("governance", {})["consciousness_permissions"] = "never_auto_apply"
     doc["models"] = [{**model, "role": "coordinator"}, {**model, "role": "evaluator"}, model]
     return doc, subs
 
 
-def _poll(c: httpx.Client, run_id: str, tries: int = 200) -> dict:
+def _poll(c: httpx.Client, run_id: str, budget_s: float) -> dict:
     row: dict = {}
-    for _ in range(tries):
-        row = c.get(f"/v1/engine/team-runs/{run_id}").json()
+    started = time.monotonic()
+    deadline = started + budget_s
+    while time.monotonic() < deadline:
+        resp = c.get(f"/v1/engine/team-runs/{run_id}")
+        # #921: a non-2xx (e.g. a stale-token 401) or a body with no 'state' used to surface as a
+        # bare KeyError several lines away from the real cause. Name the status + body instead —
+        # the test's own polling scaffolding broke, not the product under test (TEST-SETUP).
+        if resp.status_code != 200:
+            raise AssertionError(
+                f"[e2e-failure:TEST-SETUP] poll GET /v1/engine/team-runs/{run_id} -> "
+                f"{resp.status_code}: {resp.text[:500]}"
+            )
+        row = resp.json()
+        if "state" not in row:
+            raise AssertionError(f"poll response for run {run_id} has no 'state': {row}")
         if row["state"] in {"SUCCEEDED", "FAILED", "REJECTED", "PAUSED"}:
             return row
         time.sleep(3)
-    raise AssertionError(f"run {run_id} never terminated (last: {row.get('state')})")
+    elapsed = time.monotonic() - started
+    raise AssertionError(
+        f"run {run_id} never terminated (last: {row.get('state')}) after {elapsed:.0f}s "
+        f"(budget {budget_s:.0f}s)"
+    )
 
 
-def _run_to_success(c: httpx.Client, doc: dict, subs: dict, gid: str) -> dict:
+def _run_to_success(c: httpx.Client, doc: dict, subs: dict, gid: str, budget_s: float) -> dict:
     """Drive ONE team run to SUCCEEDED (ADR-042 bounded re-run for a weak-model wobble)."""
     created = c.post(
         "/v1/engine/team-runs",
@@ -133,13 +155,13 @@ def _run_to_success(c: httpx.Client, doc: dict, subs: dict, gid: str) -> dict:
     )
     assert created.status_code == 202, created.text
     run_id = created.json()["id"]
-    done = _poll(c, run_id)
+    done = _poll(c, run_id, budget_s)
     for _ in range(4):
         if done["state"] == "SUCCEEDED":
             break
         assert done["state"] == "FAILED", done
         assert c.post(f"/v1/engine/team-runs/{run_id}/rerun").status_code == 202
-        done = _poll(c, run_id)
+        done = _poll(c, run_id, budget_s)
     assert done["state"] == "SUCCEEDED", f"team run never converged: {done}"
     return done
 
@@ -154,6 +176,7 @@ def _loop_rounds(row: dict) -> int:
 def test_a_team_compounds_across_runs_by_remembering(
     register: Callable[..., dict],
     gateway_client: Callable[[str], httpx.Client],
+    loop_poll_budget: Callable[[int], float],
 ) -> None:
     user = register(f"compound{uuid.uuid4().hex[:10]} owner")
     c = gateway_client(user["token"])
@@ -161,9 +184,10 @@ def test_a_team_compounds_across_runs_by_remembering(
     nonce = uuid.uuid4().hex[:10]
     doc, subs = _import_team(c, user, nonce, or_cred)
     gid = c.post("/api/v1/graphs", json={"name": "writer-critic-compounding"}).json()["id"]
+    budget = loop_poll_budget(_MAX_ROUNDS)
 
     # ── RUN 1 — converge + write the solution lesson into the team blackboard ──────────────────
-    run1 = _run_to_success(c, doc, subs, gid)
+    run1 = _run_to_success(c, doc, subs, gid, budget)
     run1_rounds = _loop_rounds(run1)
     assert nonce in str(run1["results"]), f"run 1 never executed a real model round: {run1}"
 
@@ -181,7 +205,7 @@ def test_a_team_compounds_across_runs_by_remembering(
     )
 
     # ── RUN 2 — the SAME team/task/graph: recall run 1's lesson, converge in NO MORE rounds ────
-    run2 = _run_to_success(c, doc, subs, gid)
+    run2 = _run_to_success(c, doc, subs, gid, budget)
     run2_rounds = _loop_rounds(run2)
     assert nonce in str(run2["results"]), f"run 2 never executed a real model round: {run2}"
 

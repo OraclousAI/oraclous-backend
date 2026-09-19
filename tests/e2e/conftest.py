@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 import re
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 
 import httpx
 import pytest
@@ -145,8 +145,16 @@ def _designate_org_model_credential(token: str, user_id: str) -> str | None:
     return str(credential_id)
 
 
+#: Maps an access token back to the refresh token it was issued with (#921), so `gateway_client`
+#: can renew a login it did not itself mint. Keyed by access token because every call site passes
+#: `gateway_client(user["token"])` — a string, not the whole `register()` dict — and changing that
+#: 80+ call-site signature is out of scope here. Populated by `register()`; never cleared (each
+#: registration's token is unique for the process lifetime, so this only ever grows within a run).
+_REFRESH_TOKENS: dict[str, str] = {}
+
+
 @pytest.fixture
-def register() -> Callable[..., dict]:
+def register(fail_as: Callable[[str, str], None]) -> Callable[..., dict]:
     """Factory: register a fresh user through the gateway → {token, org_id, user_id, email}.
 
     ``with_model_credential=True`` also designates the caller's key as the org's default model
@@ -164,18 +172,25 @@ def register() -> Callable[..., dict]:
             timeout=15.0,
         )
         assert reg.status_code == 201, f"register failed: {reg.status_code} {reg.text}"
-        token = reg.json()["access_token"]
+        reg_body = reg.json()
+        token = reg_body["access_token"]
+        _REFRESH_TOKENS[token] = reg_body["refresh_token"]
         me_response = httpx.get(
             f"{GATEWAY}/v1/auth/me", headers={"Authorization": f"Bearer {token}"}, timeout=15.0
         )
-        # #850: a throttled read-back used to surface as `KeyError: 'organisation_id'` several
-        # lines later, in a test that had nothing to do with auth. Name the status here instead.
-        assert me_response.status_code == 200, (
-            f"/v1/auth/me failed: {me_response.status_code} {me_response.text}"
-        )
+        # #850 / #1061: a throttled read-back (the sign-up rate limiter) used to surface as
+        # `KeyError: 'organisation_id'` several lines later, in a test that had nothing to do with
+        # auth. Name the status here instead — the test's own scaffolding hit a limiter, not a
+        # product bug (#921 TEST-SETUP).
+        if me_response.status_code != 200:
+            fail_as(
+                "TEST-SETUP",
+                f"/v1/auth/me failed: {me_response.status_code} {me_response.text}",
+            )
         me = me_response.json()
         return {
             "token": token,
+            "refresh_token": reg_body["refresh_token"],
             "org_id": me["organisation_id"],
             "user_id": me["id"],
             "email": email,
@@ -187,21 +202,108 @@ def register() -> Callable[..., dict]:
     return _register
 
 
+class _RenewingAuth(httpx.Auth):
+    """Bearer auth that renews the access token through the gateway's public refresh endpoint on a
+    401 (#921), the same way a real user's client would — never a server-minted token.
+
+    Some e2e tests (the real-model loop tests) poll for 20+ minutes, which outlives the 30-min
+    access token (`USER_ACCESS_TOKEN_TTL_MINUTES`). On a 401 this calls ``POST /v1/auth/refresh``
+    with the refresh token issued at registration, swaps in the fresh access/refresh pair (the
+    refresh token rotates — auth-service revokes the whole family on reuse), and retries the ONE
+    failed request once. If the refresh itself fails, the original 401 is returned unchanged —
+    never masked.
+    """
+
+    def __init__(self, gateway: str, access_token: str, refresh_token: str) -> None:
+        self._gateway = gateway
+        self._access_token = access_token
+        self._refresh_token = refresh_token
+
+    def auth_flow(self, request: httpx.Request) -> Generator[httpx.Request, httpx.Response, None]:
+        request.headers["Authorization"] = f"Bearer {self._access_token}"
+        response = yield request
+        if response.status_code != 401:
+            return
+        response.read()  # drain the failed response before issuing a new request on the same conn
+        refreshed = httpx.post(
+            f"{self._gateway}/v1/auth/refresh",
+            json={"refresh_token": self._refresh_token},
+            timeout=15.0,
+        )
+        if refreshed.status_code != 200:
+            return  # refresh itself failed — surface the original 401, never mask it
+        body = refreshed.json()
+        self._access_token = body["access_token"]
+        self._refresh_token = body["refresh_token"]
+        request.headers["Authorization"] = f"Bearer {self._access_token}"
+        yield request
+
+
 @pytest.fixture
 def gateway_client() -> Iterator[Callable[[str], httpx.Client]]:
-    """Factory for httpx clients bound to the gateway + a JWT; all are closed at teardown."""
+    """Factory for httpx clients bound to the gateway + a JWT; all are closed at teardown.
+
+    When ``token`` came from ``register()`` the client renews its own login on a 401 via
+    ``_RenewingAuth`` instead of failing outright (#921). A token this fixture has no refresh
+    token for (e.g. a deliberately invalid one in an auth-failure test) keeps today's behaviour: a
+    plain, non-renewing bearer header.
+    """
     opened: list[httpx.Client] = []
 
     def _client(token: str) -> httpx.Client:
-        c = httpx.Client(
-            base_url=GATEWAY, headers={"Authorization": f"Bearer {token}"}, timeout=30.0
-        )
+        refresh_token = _REFRESH_TOKENS.get(token)
+        if refresh_token is not None:
+            c = httpx.Client(
+                base_url=GATEWAY, auth=_RenewingAuth(GATEWAY, token, refresh_token), timeout=30.0
+            )
+        else:
+            c = httpx.Client(
+                base_url=GATEWAY, headers={"Authorization": f"Bearer {token}"}, timeout=30.0
+            )
         opened.append(c)
         return c
 
     yield _client
     for c in opened:
         c.close()
+
+
+# ── Failure-class taxonomy (#921) ─────────────────────────────────────────────────────────────────
+#
+# A real-model e2e failure that is not a product bug must still fail the run -- it is never
+# skipped, xfailed, or swallowed -- but it must be LABELLED, so a reviewer does not have to
+# re-derive "not our bug" by hand every time. Four classes, PRODUCT is the default:
+#   PRODUCT       -- any unlabelled failure (the default: an author who forgets to classify a new
+#                    failure gets the conservative "assume it's our bug" reading).
+#   PROVIDER      -- the model provider itself refused the call (#1049: rate limit / auth / timeout
+#                    / 5xx), before product logic ever ran.
+#   MODEL-QUALITY -- the product worked, but the real model's answer fell short of the test's bar
+#                    (an evaluator score below threshold, a loop that never converged).
+#   TEST-SETUP    -- the test's own scaffolding broke, not the product under test (a poll got a
+#                    non-2xx, registration hit the sign-up limiter).
+# See tests/e2e/README.md for the full rules on when a test author may use each.
+_FAILURE_TAG_RE = re.compile(r"\[e2e-failure:([A-Za-z-]+)\]")
+_KNOWN_FAILURE_CLASSES = ("PROVIDER", "MODEL-QUALITY", "TEST-SETUP")
+_PRODUCT_CLASS = "PRODUCT"
+
+
+@pytest.fixture
+def fail_as() -> Callable[[str, str], None]:
+    """Factory: ``fail_as(kind, message)`` raises an AssertionError tagged for the failure-class
+    taxonomy above (#921). It still fails the test -- the tag only tells the terminal summary and
+    junit XML *why*, so a provider refusal or a real model's weak answer is not read as a product
+    bug. ``kind`` is one of PROVIDER / MODEL-QUALITY / TEST-SETUP -- never pass PRODUCT, it is the
+    default for anything left untagged.
+    """
+
+    def _fail(kind: str, message: str) -> None:
+        if kind not in _KNOWN_FAILURE_CLASSES:
+            raise ValueError(
+                f"unknown e2e failure class {kind!r} -- want one of {_KNOWN_FAILURE_CLASSES}"
+            )
+        pytest.fail(f"[e2e-failure:{kind}] {message}", pytrace=False)
+
+    return _fail
 
 
 # ── Legible environment failures (#1049) ──────────────────────────────────────────────────────────
@@ -240,15 +342,44 @@ def _provider_refusal_reason(error_message: str | None) -> str | None:
     return f"a transport failure reaching the provider — {error_message}"
 
 
+# ── Loop poll budgets scale with max_rounds, not a fixed try count (#921) ─────────────────────────
+#
+# Nightly service logs showed each loop member turn taking 2-3 min on the real model, with the
+# first evaluation landing ~7 min in — a fixed try-count poll (e.g. 150 tries * 3s = 450s) declares
+# the run failed while it is still progressing. Scale the deadline with the loop's own declared
+# max_rounds instead. Per-round ceiling defaults to 180s, overridable via
+# E2E_LOOP_ROUND_CEILING_S for a slower model. The nightly job budget is 300 min
+# (.github/workflows/e2e-nightly.yml) — keep this default well inside it across the whole
+# loop-marked slice.
+_LOOP_ROUND_CEILING_S = float(os.getenv("E2E_LOOP_ROUND_CEILING_S", "180"))
+_LOOP_POLL_STARTUP_ALLOWANCE_S = 60.0
+
+
+def loop_poll_budget_s(max_rounds: int) -> float:
+    """Deadline (seconds) for polling a real-model loop run to a terminal state (#921).
+
+    ``max_rounds * per-round ceiling + a fixed startup allowance`` — see the module comment above
+    for why a fixed try count undercounts a real model.
+    """
+    return max_rounds * _LOOP_ROUND_CEILING_S + _LOOP_POLL_STARTUP_ALLOWANCE_S
+
+
 @pytest.fixture
-def assert_run_succeeded() -> Callable[..., None]:
+def loop_poll_budget() -> Callable[[int], float]:
+    """Fixture form of ``loop_poll_budget_s`` — take this instead of importing the module (the
+    package docstring above: a test must never ``from tests.e2e.conftest import ...``)."""
+    return loop_poll_budget_s
+
+
+@pytest.fixture
+def assert_run_succeeded(fail_as: Callable[[str, str], None]) -> Callable[..., None]:
     """Assert a run/agent-execute response reached SUCCEEDED — legibly telling an upstream provider
-    refusal (ENVIRONMENT, #1049) apart from a genuine product failure.
+    refusal (PROVIDER, #1049) apart from a genuine product failure.
 
     Pass the parsed JSON body and the key holding its terminal state: ``state_key="status"`` for
     ``POST /v1/harnesses/execute``'s response, ``state_key="state"`` for a polled team-run. A
     provider refusal (429 / 5xx / transport, matched against the harness's own ``LLMClientError``
-    message shape) fails loudly with an ``[ENVIRONMENT]``-tagged message naming the reason,
+    message shape) fails loudly with a ``[e2e-failure:PROVIDER]``-tagged message naming the reason,
     instead of the bare ``assert 'FAILED' == 'SUCCEEDED'`` a reviewer used to have to re-derive by
     hand every time (#1049). Anything else still fails as a normal assertion — this never turns a
     real failure green, it only makes an environmental one look different from a product one.
@@ -259,13 +390,61 @@ def assert_run_succeeded() -> Callable[..., None]:
         if state != succeeded:
             reason = _provider_refusal_reason(body.get("error_message"))
             if reason is not None:
-                pytest.fail(
-                    f"[ENVIRONMENT] not a product failure — {reason}. The model provider refused "
-                    "the call before product logic ran; this is the test model's quota or "
-                    "availability, not a regression (see tests/e2e/README.md, issue #1049). "
-                    f"Full body: {body}",
-                    pytrace=False,
+                fail_as(
+                    "PROVIDER",
+                    f"not a product failure — {reason}. The model provider refused the call "
+                    "before product logic ran; this is the test model's quota or availability, "
+                    f"not a regression (see tests/e2e/README.md, issue #1049). Full body: {body}",
                 )
         assert state == succeeded, body
 
     return _assert
+
+
+# ── Group failed e2e tests by class in the terminal summary (#921) ───────────────────────────────
+#
+# Every class above still counts as a FAILURE in the exit code and the counts pytest prints — this
+# hook only adds a grouped breakdown afterwards so a reviewer can tell, at a glance, whether a red
+# run needs a product fix or is a labelled provider/model-quality/setup condition. The class is also
+# recorded as a `user_properties` entry so junit XML (CI's artifact) carries it too.
+
+
+def _failure_class_of(report: pytest.TestReport) -> str:
+    """PRODUCT unless the failure's own message carries a known ``[e2e-failure:*]`` tag."""
+    longrepr = str(getattr(report, "longrepr", "") or "")
+    match = _FAILURE_TAG_RE.search(longrepr)
+    if match and match.group(1) in _KNOWN_FAILURE_CLASSES:
+        return match.group(1)
+    return _PRODUCT_CLASS
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(
+    item: pytest.Item, call: pytest.CallInfo
+) -> Generator[None, None, None]:
+    outcome = yield
+    report = outcome.get_result()
+    if report.when == "call" and report.failed:
+        report.user_properties.append(("e2e_failure_class", _failure_class_of(report)))
+
+
+def pytest_terminal_summary(
+    terminalreporter: pytest.TerminalReporter, exitstatus: int, config: pytest.Config
+) -> None:
+    """Print failed e2e tests grouped by failure class (#921), PRODUCT first."""
+    failed = terminalreporter.stats.get("failed", [])
+    if not failed:
+        return
+    by_class: dict[str, list[str]] = {}
+    for report in failed:
+        cls = dict(report.user_properties).get("e2e_failure_class", _PRODUCT_CLASS)
+        by_class.setdefault(cls, []).append(report.nodeid)
+    terminalreporter.write_sep("=", "e2e failures by class (#921)")
+    ordered_classes = [_PRODUCT_CLASS, *sorted(c for c in by_class if c != _PRODUCT_CLASS)]
+    for cls in ordered_classes:
+        nodeids = by_class.get(cls)
+        if not nodeids:
+            continue
+        terminalreporter.write_line(f"{cls}: {len(nodeids)}")
+        for nodeid in nodeids:
+            terminalreporter.write_line(f"  {nodeid}")
